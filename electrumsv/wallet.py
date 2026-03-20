@@ -559,10 +559,15 @@ class AbstractAccount:
     def get_possible_scripts_for_id(self, keyinstance_id: int) -> list[Script]:
         public_keys = self.get_public_keys_for_id(keyinstance_id)
         public_keys_hex = [pubkey.to_hex() for pubkey in public_keys]
-        return [
+        scripts = [
             (script_type, make_script_template(public_keys_hex, script_type, self.m).to_script())
             for script_type in self.get_enabled_script_types()
         ]
+        scripts.extend(self._get_known_vault_scripts_for_id(keyinstance_id))
+        return scripts
+
+    def _get_known_vault_scripts_for_id(self, keyinstance_id: int) -> List[Tuple[ScriptType, Script]]:
+        return self._wallet.get_vault_contract_scripts_for_keyinstance(self, keyinstance_id)
 
     def get_script_for_id(self, keyinstance_id: int,
             script_type: Optional[ScriptType]=None) -> Script:
@@ -863,6 +868,17 @@ class AbstractAccount:
         script_type = script_type or keyinstance.script_type
         return make_script_template(public_keys_hex, script_type, self.m)  # <-- use the standalone function
 
+    def get_keyinstance_for_public_key_hex(self, public_key_hex: str) -> Optional[KeyInstanceRow]:
+        normalized = PublicKey.from_hex(public_key_hex).to_hex()
+        for keyinstance in self._keyinstances.values():
+            try:
+                public_keys = self.get_public_keys_for_id(keyinstance.keyinstance_id)
+            except Exception:
+                continue
+            if len(public_keys) == 1 and public_keys[0].to_hex() == normalized:
+                return keyinstance
+        return None
+
 
     def get_default_script_type(self) -> ScriptType:
         return ScriptType(self._row.default_script_type)
@@ -1079,8 +1095,21 @@ class AbstractAccount:
 
             output_bytes = bytes(output.script_pubkey)
             metadata = self.get_vault_contract_metadata_for_script(output.script_pubkey)
-            if metadata is not None and metadata.get("owner_keyinstance_id") is not None:
-                keyinstance = self._keyinstances[metadata["owner_keyinstance_id"]]
+            if metadata is not None:
+                owner_keyinstance_id = metadata.get("owner_keyinstance_id")
+                if owner_keyinstance_id is None:
+                    owner_public_key = metadata.get("owner_public_key")
+                    if isinstance(owner_public_key, str):
+                        keyinstance = self.get_keyinstance_for_public_key_hex(owner_public_key)
+                        if keyinstance is not None:
+                            owner_keyinstance_id = keyinstance.keyinstance_id
+                            self.set_vault_contract_whitelist(output.script_pubkey,
+                                metadata["whitelist"], metadata["max_fee"],
+                                metadata["owner_address"], owner_keyinstance_id,
+                                owner_public_key)
+                if owner_keyinstance_id is None:
+                    continue
+                keyinstance = self._keyinstances[owner_keyinstance_id]
                 txo_flags = base_txo_flags
                 for spend_tx_id, _height in self._sync_state.get_key_history(
                         keyinstance.keyinstance_id):
@@ -2188,9 +2217,11 @@ class ImportedPrivkeyAccount(ImportedAccountBase):
 
     def get_possible_scripts_for_id(self, keyinstance_id: int) -> List[Tuple[ScriptType, Script]]:
         keyinstance = self._keyinstances[keyinstance_id]
-        return [ (script_type,
+        scripts = [ (script_type,
                 self.get_script_template_for_id(keyinstance_id, script_type).to_script())
             for script_type in self.get_enabled_script_types() ]
+        scripts.extend(self._get_known_vault_scripts_for_id(keyinstance_id))
+        return scripts
 
     def get_script_template_for_id(self, keyinstance_id: int,
             script_type: Optional[ScriptType] = None) -> ScriptTemplate:
@@ -2331,10 +2362,12 @@ class SimpleDeterministicAccount(SimpleAccount, DeterministicAccount):
 
     def get_possible_scripts_for_id(self, keyinstance_id: int) -> list[tuple['ScriptType','Script']]:
         public_key = self._get_public_key_for_id(keyinstance_id)
-        return [
+        scripts = [
             (script_type, self.get_script_template([public_key], script_type).to_script())
             for script_type in self.get_enabled_script_types()
         ]
+        scripts.extend(self._get_known_vault_scripts_for_id(keyinstance_id))
+        return scripts
 
     def get_script_template_for_id(self, keyinstance_id: int, script_type: Optional['ScriptType']=None) -> 'ScriptTemplate':
         public_key = self._get_public_key_for_id(keyinstance_id)
@@ -3118,7 +3151,12 @@ class Wallet(TriggeredCallbacks):
         metadata = self.get_vault_contract_metadata_for_script(script)
         if metadata is not None:
             return metadata["whitelist"]
-        return None
+        script_key = scripthash_hex(script)
+        whitelist_map = self._storage.get("vault_contract_whitelist_map", {})
+        if not isinstance(whitelist_map, dict):
+            return None
+        raw_entry = whitelist_map.get(script_key)
+        return CovenantContractRuntime.parse_whitelist_map_value(raw_entry)
 
     def get_vault_contract_metadata_for_script(self, script: Script) -> Optional[dict]:
         script_key = scripthash_hex(script)
@@ -3130,17 +3168,20 @@ class Wallet(TriggeredCallbacks):
         if raw_entry is not None:
             metadata = CovenantContractRuntime.parse_contract_metadata(raw_entry)
             if metadata is not None:
+                if not CovenantContractRuntime.script_matches_metadata(script, metadata):
+                    return None
                 if metadata != raw_entry:
                     whitelist_map[script_key] = metadata
                     self._storage.put("vault_contract_whitelist_map", whitelist_map)
                 return metadata
-            normalized = CovenantContractRuntime.parse_whitelist_map_value(raw_entry)
-            if normalized is not None:
-                metadata = CovenantContractRuntime.build_contract_metadata(
-                    normalized, normalized, CovenantContractRuntime.DEFAULT_MAX_FEE)
-                whitelist_map[script_key] = metadata
-                self._storage.put("vault_contract_whitelist_map", whitelist_map)
-                return metadata
+        metadata = CovenantContractRuntime.parse_contract_locking_script(script)
+        if metadata is not None:
+            keyinstance = self.get_keyinstance_for_public_key_hex(metadata["owner_public_key"])
+            if keyinstance is not None:
+                metadata["owner_keyinstance_id"] = keyinstance.keyinstance_id
+            whitelist_map[script_key] = metadata
+            self._storage.put("vault_contract_whitelist_map", whitelist_map)
+            return metadata
         return None
 
     def set_vault_contract_whitelist(self, script: Script, whitelist_address: str, max_fee: int,
@@ -3153,6 +3194,10 @@ class Wallet(TriggeredCallbacks):
         whitelists = self._storage.get(key, {})
         if not isinstance(whitelists, dict):
             whitelists = {}
+        if owner_public_key is None:
+            raise ValueError(_("Vault contract metadata requires the owner public key"))
+        if not CovenantContractRuntime.script_matches_metadata(script, metadata):
+            raise ValueError(_("Vault contract metadata does not match the output script"))
         existing_metadata = self.get_vault_contract_metadata_for_script(script)
         if existing_metadata is not None and existing_metadata != metadata:
             raise ValueError(_("Cannot change metadata for an existing vault contract output"))
@@ -3164,6 +3209,48 @@ class Wallet(TriggeredCallbacks):
 
     def get_vault_contract_metadata_for_utxo(self, utxo: 'UTXO') -> Optional[dict]:
         return self.get_vault_contract_metadata_for_script(utxo.script_pubkey)
+
+    def get_keyinstance_for_public_key_hex(self, public_key_hex: str) -> Optional[KeyInstanceRow]:
+        for account in self._accounts.values():
+            keyinstance = account.get_keyinstance_for_public_key_hex(public_key_hex)
+            if keyinstance is not None:
+                return keyinstance
+        return None
+
+    def get_vault_contract_scripts_for_keyinstance(self, account: AbstractAccount,
+            keyinstance_id: int) -> List[Tuple[ScriptType, Script]]:
+        whitelist_map = self._storage.get("vault_contract_whitelist_map", {})
+        if not isinstance(whitelist_map, dict):
+            return []
+
+        keyinstance = account.get_keyinstance(keyinstance_id)
+        key_public_key = None
+        scripts: List[Tuple[ScriptType, Script]] = []
+        for raw_entry in whitelist_map.values():
+            metadata = CovenantContractRuntime.parse_contract_metadata(raw_entry)
+            if metadata is None:
+                continue
+            owner_keyinstance_id = metadata.get("owner_keyinstance_id")
+            if owner_keyinstance_id is not None and owner_keyinstance_id != keyinstance_id:
+                continue
+            owner_public_key = metadata.get("owner_public_key")
+            if owner_keyinstance_id is None:
+                if not isinstance(owner_public_key, str):
+                    continue
+                if key_public_key is None:
+                    public_keys = account.get_public_keys_for_id(keyinstance_id)
+                    if len(public_keys) != 1:
+                        continue
+                    key_public_key = public_keys[0].to_hex()
+                if owner_public_key != key_public_key:
+                    continue
+            try:
+                script = CovenantContractRuntime.build_contract_locking_script(
+                    cast(str, owner_public_key), metadata["whitelist"], metadata["max_fee"])
+            except Exception:
+                continue
+            scripts.append((ScriptType.NONE, script))
+        return scripts
 
     def get_cache_size_for_tx_bytedata(self) -> int:
         """

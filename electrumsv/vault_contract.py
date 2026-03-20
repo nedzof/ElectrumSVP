@@ -7,7 +7,7 @@ from pathlib import Path
 import struct
 from typing import Any, Dict, Optional
 
-from bitcoinx import Address, PublicKey, Script
+from bitcoinx import Address, P2PKH_Address, PublicKey, Script
 
 from .bip276 import PREFIX_BIP276_SCRIPT, bip276_encode
 from .constants import PREFIX_ASM_SCRIPT
@@ -76,6 +76,105 @@ class CovenantContractRuntime:
             encoded[-1] |= 0x80
         return bytes(encoded)
 
+    @staticmethod
+    def decode_script_number(data: bytes) -> int:
+        if not data:
+            return 0
+        raw = bytearray(data)
+        negative = bool(raw[-1] & 0x80)
+        if negative:
+            raw[-1] &= 0x7F
+        value = 0
+        for index, byte in enumerate(raw):
+            value |= byte << (8 * index)
+        return -value if negative else value
+
+    @staticmethod
+    def _read_push_data(script_bytes: bytes, offset: int) -> tuple[bytes, int]:
+        if offset >= len(script_bytes):
+            raise ValueError("unexpected end of script")
+        opcode = script_bytes[offset]
+        if opcode == 0:
+            return b"", offset + 1
+        if 1 <= opcode <= 75:
+            start = offset + 1
+            end = start + opcode
+            return script_bytes[start:end], end
+        if opcode == 0x4C:
+            data_len = script_bytes[offset + 1]
+            start = offset + 2
+            end = start + data_len
+            return script_bytes[start:end], end
+        if opcode == 0x4D:
+            data_len = int.from_bytes(script_bytes[offset + 1:offset + 3], "little")
+            start = offset + 3
+            end = start + data_len
+            return script_bytes[start:end], end
+        if opcode == 0x4E:
+            data_len = int.from_bytes(script_bytes[offset + 1:offset + 5], "little")
+            start = offset + 5
+            end = start + data_len
+            return script_bytes[start:end], end
+        raise ValueError(f"expected pushdata opcode at offset {offset}, got 0x{opcode:02x}")
+
+    @classmethod
+    def parse_contract_locking_script(cls, script: Script) -> Optional[dict]:
+        artifact = cls._load_artifact()
+        constructor = artifact.get("abi", {}).get("constructor", {})
+        params = constructor.get("params", [])
+        slots = sorted(artifact.get("constructorSlots", []), key=lambda entry: entry["byteOffset"])
+        base_script = bytes.fromhex(artifact["script"])
+        script_bytes = script.to_bytes()
+
+        values: dict[int, Any] = {}
+        base_offset = 0
+        script_offset = 0
+        try:
+            for slot in slots:
+                slot_offset = slot["byteOffset"]
+                prefix = base_script[base_offset:slot_offset]
+                if script_bytes[script_offset:script_offset + len(prefix)] != prefix:
+                    return None
+                script_offset += len(prefix)
+                data, script_offset = cls._read_push_data(script_bytes, script_offset)
+                param = params[slot["paramIndex"]]
+                param_type = param["type"]
+                if param_type == "PubKey":
+                    values[slot["paramIndex"]] = PublicKey.from_bytes(data).to_hex()
+                elif param_type == "Addr":
+                    if len(data) != 20:
+                        return None
+                    values[slot["paramIndex"]] = str(P2PKH_Address(data, Net.COIN))
+                elif param_type in ("bigint", "int"):
+                    values[slot["paramIndex"]] = cls.decode_script_number(data)
+                else:
+                    return None
+                base_offset = slot_offset + 1
+        except Exception:
+            return None
+
+        suffix = base_script[base_offset:]
+        if script_bytes[script_offset:] != suffix:
+            return None
+
+        owner_public_key = values.get(0)
+        whitelist = values.get(1)
+        max_fee = values.get(2)
+        if not isinstance(owner_public_key, str) or not isinstance(whitelist, str) or \
+                not isinstance(max_fee, int) or max_fee < 0:
+            return None
+
+        owner_address = str(PublicKey.from_hex(owner_public_key).to_address(network=Net.COIN))
+        return {
+            "version": cls.CURRENT_VERSION,
+            "contract_type": cls.CONTRACT_TYPE,
+            "owner_address": owner_address,
+            "owner_public_key": owner_public_key,
+            "whitelist": whitelist,
+            "max_fee": max_fee,
+            "owner_keyinstance_id": None,
+        }
+
     @classmethod
     def _adjust_code_separator_offset(cls, base_offset: int, constructor_args: list[Any]) -> int:
         artifact = cls._load_artifact()
@@ -123,8 +222,20 @@ class CovenantContractRuntime:
         return bip276_encode(PREFIX_BIP276_SCRIPT, script.to_bytes(), Net.BIP276_VERSION)
 
     @classmethod
+    def validate_owner_binding(cls, owner_address: str, owner_public_key: str) -> tuple[str, str]:
+        normalized_public_key = PublicKey.from_hex(owner_public_key).to_hex()
+        normalized_address = str(Address.from_string(owner_address, Net.COIN))
+        expected_address = str(PublicKey.from_hex(normalized_public_key).to_address(
+            network=Net.COIN))
+        if expected_address != normalized_address:
+            raise ValueError("owner address does not match owner public key")
+        return normalized_address, normalized_public_key
+
+    @classmethod
     def build_contract_metadata(cls, owner_address: str, whitelist_address: str, max_fee: int,
             owner_keyinstance_id: Optional[int]=None, owner_public_key: Optional[str]=None) -> dict:
+        if max_fee < 0:
+            raise ValueError("max fee cannot be negative")
         owner_address_text = str(Address.from_string(owner_address, Net.COIN))
         metadata = {
             "version": cls.CURRENT_VERSION,
@@ -135,7 +246,10 @@ class CovenantContractRuntime:
             "owner_keyinstance_id": owner_keyinstance_id,
         }
         if owner_public_key is not None:
-            metadata["owner_public_key"] = PublicKey.from_hex(owner_public_key).to_hex()
+            owner_address_text, owner_public_key = cls.validate_owner_binding(
+                owner_address_text, owner_public_key)
+            metadata["owner_address"] = owner_address_text
+            metadata["owner_public_key"] = owner_public_key
         return metadata
 
     @classmethod
@@ -150,7 +264,7 @@ class CovenantContractRuntime:
         max_fee = value.get("max_fee")
         if not isinstance(whitelist, str) or not isinstance(owner_address, str):
             return None
-        if not isinstance(max_fee, int):
+        if not isinstance(max_fee, int) or max_fee < 0:
             return None
         owner_keyinstance_id = value.get("owner_keyinstance_id")
         if owner_keyinstance_id is not None and not isinstance(owner_keyinstance_id, int):
@@ -158,7 +272,8 @@ class CovenantContractRuntime:
         owner_public_key = value.get("owner_public_key")
         if owner_public_key is not None:
             try:
-                owner_public_key = PublicKey.from_hex(owner_public_key).to_hex()
+                owner_address, owner_public_key = cls.validate_owner_binding(
+                    owner_address, owner_public_key)
             except Exception:
                 owner_public_key = None
         return {
@@ -170,6 +285,15 @@ class CovenantContractRuntime:
             "max_fee": max_fee,
             "owner_keyinstance_id": owner_keyinstance_id,
         }
+
+    @classmethod
+    def script_matches_metadata(cls, script: Script, metadata: dict) -> bool:
+        owner_public_key = metadata.get("owner_public_key")
+        if not isinstance(owner_public_key, str):
+            return False
+        expected_script = cls.build_contract_locking_script(
+            owner_public_key, metadata["whitelist"], metadata["max_fee"])
+        return expected_script == script
 
     @classmethod
     def parse_whitelist_map_value(cls, value) -> Optional[str]:
