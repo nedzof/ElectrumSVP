@@ -32,6 +32,7 @@ from bitcoinx import Bitcoin
 from bitcoinx.errors import MissingHeader
 
 from .async_ import ASync
+from .constants import PRELOADED_HEADERS
 from .constants import MAX_INCOMING_ELECTRUMX_MESSAGE_MB
 from .logs import logs
 from .simple_config import SimpleConfig
@@ -222,4 +223,3 @@ class AppState(metaclass=_AppStateMeta):
 
 
 app_state = AppState
-

@@ -8,6 +8,7 @@ import tempfile
 import threading
 from typing import Dict, Optional, List, Set
 import unittest
+import unittest.mock
 
 import pytest
 

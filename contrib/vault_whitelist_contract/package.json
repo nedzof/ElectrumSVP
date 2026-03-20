@@ -1,0 +1,12 @@
+{
+  "name": "electrumsv-vault-whitelist-contract",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Rúnar-based whitelist vault covenant for ElectrumSV.",
+  "scripts": {
+    "compile": "runar compile src/contracts/VaultWhitelist.runar.py --output artifacts"
+  },
+  "devDependencies": {
+    "runar-cli": "^0.3.2"
+  }
+}

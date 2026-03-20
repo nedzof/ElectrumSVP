@@ -48,7 +48,7 @@ from bitcoinx import Bitcoin, P2PKH_Address
 
 from . import coinchooser
 from .app_state import app_state
-from .bitcoin import compose_chain_string, COINBASE_MATURITY, ScriptTemplate
+from .bitcoin import compose_chain_string, COINBASE_MATURITY, ScriptTemplate, scripthash_hex
 from .constants import (AccountType, CHANGE_SUBPATH, DEFAULT_TXDATA_CACHE_SIZE_MB, DerivationType,
     KeyInstanceFlag, KeystoreTextType, MAXIMUM_TXDATA_CACHE_SIZE_MB, MINIMUM_TXDATA_CACHE_SIZE_MB,
     RECEIVING_SUBPATH, ScriptType, TransactionOutputFlag, TxFlags, WalletEventFlag,
@@ -63,6 +63,7 @@ from .keystore import (DerivablePaths, Deterministic_KeyStore, Hardware_KeyStore
     SignableKeystoreTypes, StandardKeystoreTypes, Xpub)
 from .logs import logs
 from .networks import Net
+from .vault_contract import CovenantContractRuntime
 from .script import AccumulatorMultiSigOutput
 from .services import InvoiceService, KeyService, RequestService
 from .simple_config import SimpleConfig
@@ -177,20 +178,25 @@ class UTXO:
         return f"{hash_to_hex_str(self.tx_hash)}:{self.out_index}"
 
     def to_tx_input(self, account: 'AbstractAccount') -> XTxInput:
-        threshold = account.get_threshold(self.script_type)
+        metadata = account.get_vault_contract_metadata_for_utxo(self)
+        script_type = ScriptType.NONE if metadata is not None else self.script_type
+        keyinstance_id = metadata["owner_keyinstance_id"] if metadata is not None and \
+            metadata.get("owner_keyinstance_id") is not None else self.keyinstance_id
+        threshold = account.get_threshold(script_type)
         # NOTE(rt12) The typing of attrs subclasses is not detected, so have to ignore.
-        x_pubkeys = account.get_xpubkeys_for_id(self.keyinstance_id)
+        x_pubkeys = account.get_xpubkeys_for_id(keyinstance_id)
         return XTxInput( # type: ignore
             prev_hash=self.tx_hash,
             prev_idx=self.out_index,
             script_sig=Script(),
             sequence=0xffffffff,
             threshold=threshold,
-            script_type=self.script_type,
+            script_type=script_type,
+            prev_script=self.script_pubkey,
             signatures=[NO_SIGNATURE] * len(x_pubkeys),
             x_pubkeys=x_pubkeys,
             value=self.value,
-            keyinstance_id=self.keyinstance_id
+            keyinstance_id=keyinstance_id
         )
 
 
@@ -615,6 +621,25 @@ class AbstractAccount:
     def have_transaction_data(self, tx_hash: bytes) -> bool:
         return self._wallet._transaction_cache.have_transaction_data(tx_hash)
 
+    def get_vault_contract_whitelist_for_script(self, script: Script) -> Optional[str]:
+        return self._wallet.get_vault_contract_whitelist_for_script(script)
+
+    def get_vault_contract_metadata_for_script(self, script: Script) -> Optional[dict]:
+        return self._wallet.get_vault_contract_metadata_for_script(script)
+
+    def get_vault_contract_whitelist_for_utxo(self, utxo: 'UTXO') -> Optional[str]:
+        return self._wallet.get_vault_contract_whitelist_for_utxo(utxo)
+
+    def get_vault_contract_metadata_for_utxo(self, utxo: 'UTXO') -> Optional[dict]:
+        return self._wallet.get_vault_contract_metadata_for_utxo(utxo)
+
+    def set_vault_contract_whitelist(self, script: Script, whitelist_address: str, max_fee: int,
+            owner_address: str, owner_keyinstance_id: Optional[int]=None,
+            owner_public_key: Optional[str]=None) -> None:
+        self._wallet.set_vault_contract_whitelist(
+            script, whitelist_address, max_fee, owner_address, owner_keyinstance_id,
+            owner_public_key)
+
     def has_received_transaction(self, tx_hash: bytes) -> bool:
         # At this time, this means received over the P2P network.
         flags = self._wallet._transaction_cache.get_flags(tx_hash)
@@ -722,21 +747,38 @@ class AbstractAccount:
             self._stxos[txo_key] = row.keyinstance_id
         else:
             keyinstance = self._keyinstances[row.keyinstance_id]
-            script_template = self.get_script_template_for_id(row.keyinstance_id)
-            address = script_template if isinstance(script_template, Address) else None
-            self.register_utxo(row.tx_hash, row.tx_index, row.value, row.flags,
-                keyinstance, script_template.to_script(), address)
+            tx = self._wallet._transaction_cache.get_transaction(row.tx_hash)
+            script: Optional[Script] = None
+            if tx is not None:
+                try:
+                    script = tx.outputs[row.tx_index].script_pubkey
+                except (AttributeError, IndexError, KeyError, TypeError):
+                    script = None
+            if script is not None:
+                metadata = self.get_vault_contract_metadata_for_script(script)
+            else:
+                metadata = None
+            if metadata is not None and script is not None:
+                self.register_utxo(row.tx_hash, row.tx_index, row.value, row.flags,
+                    keyinstance, script, None, ScriptType.NONE)
+            else:
+                script_template = self.get_script_template_for_id(row.keyinstance_id)
+                address = script_template if isinstance(script_template, Address) else None
+                self.register_utxo(row.tx_hash, row.tx_index, row.value, row.flags,
+                    keyinstance, script_template.to_script(), address)
 
     def register_utxo(self, tx_hash: bytes, output_index: int, value: int,
             flags: TransactionOutputFlag, keyinstance: KeyInstanceRow,
-            script: Script, address: Optional[ScriptTemplate]=None) -> None:
+            script: Script, address: Optional[ScriptTemplate]=None,
+            utxo_script_type: Optional[ScriptType]=None) -> None:
         is_coinbase = (flags & TransactionOutputFlag.IS_COINBASE) != 0
         utxo_key = TxoKeyType(tx_hash, output_index)
+        script_type = keyinstance.script_type if utxo_script_type is None else utxo_script_type
         with self._utxos_lock:
             self._utxos[utxo_key] = UTXO(
                 value=value,
                 script_pubkey=script,
-                script_type=keyinstance.script_type,
+                script_type=script_type,
                 tx_hash=tx_hash,
                 out_index=output_index,
                 keyinstance_id=keyinstance.keyinstance_id,
@@ -753,12 +795,13 @@ class AbstractAccount:
     # Should be called with the transaction lock.
     def create_transaction_output(self, tx_hash: bytes, output_index: int, value: int,
             flags: TransactionOutputFlag, keyinstance: KeyInstanceRow,
-            script: Script, address: Optional[ScriptTemplate]=None):
+            script: Script, address: Optional[ScriptTemplate]=None,
+            utxo_script_type: Optional[ScriptType]=None):
         if flags & TransactionOutputFlag.IS_SPENT:
             self._stxos[TxoKeyType(tx_hash, output_index)] = keyinstance.keyinstance_id
         else:
             self.register_utxo(tx_hash, output_index, value, flags, keyinstance,
-                script, address)
+                script, address, utxo_script_type)
 
         self._wallet.create_transactionoutputs(self._id, [ TransactionOutputRow(tx_hash,
             output_index, value, keyinstance.keyinstance_id, flags) ])
@@ -849,8 +892,10 @@ class AbstractAccount:
         return None
 
     def get_threshold(self, script_type: ScriptType) -> int:
-        assert script_type in (ScriptType.P2PKH, ScriptType.P2PK), \
+        assert script_type in (ScriptType.P2PKH, ScriptType.P2PK, ScriptType.NONE), \
             f"get_threshold got bad script type {script_type}"
+        if script_type == ScriptType.NONE:
+            return 1
         return 1
 
     def export_private_key(self, keyinstance_id: int, password: str) -> Optional[str]:
@@ -1033,6 +1078,33 @@ class AbstractAccount:
                 continue
 
             output_bytes = bytes(output.script_pubkey)
+            metadata = self.get_vault_contract_metadata_for_script(output.script_pubkey)
+            if metadata is not None and metadata.get("owner_keyinstance_id") is not None:
+                keyinstance = self._keyinstances[metadata["owner_keyinstance_id"]]
+                txo_flags = base_txo_flags
+                for spend_tx_id, _height in self._sync_state.get_key_history(
+                        keyinstance.keyinstance_id):
+                    if spend_tx_id == tx_id:
+                        continue
+                    spend_tx_hash = hex_str_to_hash(spend_tx_id)
+                    spend_tx = self._wallet._transaction_cache.get_transaction(spend_tx_hash)
+                    if spend_tx is None:
+                        continue
+                    for spend_txin in spend_tx.inputs:
+                        if spend_txin.prev_hash == tx_hash and spend_txin.prev_idx == output_index:
+                            break
+                    else:
+                        continue
+
+                    tx_deltas[(spend_tx_hash, keyinstance.keyinstance_id)] -= output.value
+                    txo_flags |= TransactionOutputFlag.IS_SPENT
+                    break
+
+                self.create_transaction_output(tx_hash, output_index, output.value,
+                    txo_flags, keyinstance, output.script_pubkey, None, ScriptType.NONE)
+                tx_deltas[(tx_hash, keyinstance.keyinstance_id)] += output.value
+                continue
+
             for keyinstance, script, script_bytes, address in key_matches:
                 if script_bytes == output_bytes:
                     break
@@ -1583,6 +1655,7 @@ class AbstractAccount:
         # This is primarily required by hardware wallets in order for them to sign transactions.
         # But it should be extended to bundle SPV proofs, and other general uses at a later time.
         self.obtain_supporting_data(tx, tx_context)
+        self._prepare_vault_contract_inputs(tx)
 
         # sign
         for k in self.get_keystores():
@@ -1607,6 +1680,54 @@ class AbstractAccount:
                 self.invoices.set_invoice_transaction(cast(int, tx_context.invoice_id), tx_hash)
             if tx_context.description:
                 self._wallet.set_transaction_label(tx_hash, tx_context.description)
+
+    def _prepare_vault_contract_inputs(self, tx: Transaction) -> None:
+        vault_inputs = []
+        for input_index, txin in enumerate(tx.inputs):
+            if txin.prev_script is None or txin.script_type != ScriptType.NONE:
+                continue
+
+            metadata = self.get_vault_contract_metadata_for_script(txin.prev_script)
+            if metadata is None:
+                continue
+            vault_inputs.append((input_index, txin, metadata))
+
+        if not vault_inputs:
+            return
+
+        if len(vault_inputs) != 1:
+            raise ValueError(_("Vault spends currently support exactly one vault UTXO"))
+
+        whitelists = { metadata["whitelist"] for _, _, metadata in vault_inputs }
+        if len(whitelists) != 1:
+            raise ValueError(_("Cannot spend mixed vault outputs in one transaction"))
+
+        whitelist = next(iter(whitelists))
+        whitelist_script = Address.from_string(whitelist, Net.COIN).to_script()
+        destination_outputs = [ output for output in tx.outputs if output.script_pubkey == whitelist_script ]
+        if len(destination_outputs) != 1:
+            raise ValueError(_("Vault spend requires one output to the whitelist destination"))
+
+        if any(output.script_pubkey != whitelist_script for output in tx.outputs):
+            raise ValueError(_("Vault spend cannot include non-whitelist outputs"))
+
+        amount = destination_outputs[0].value
+        if amount is all:
+            raise ValueError(_("Vault contract amount is not yet fully estimated"))
+        if amount <= 0:
+            raise ValueError(_("Vault contract amount must be positive"))
+
+        tx_hex = tx.to_hex()
+        for input_index, txin, metadata in vault_inputs:
+            owner_public_key = metadata.get("owner_public_key")
+            if owner_public_key is None:
+                owner_keyinstance_id = metadata.get("owner_keyinstance_id")
+                if owner_keyinstance_id is None:
+                    raise ValueError(_("Vault contract metadata is missing the owner key"))
+                owner_public_key = self.get_public_keys_for_id(owner_keyinstance_id)[0].to_hex()
+            txin.contract_args = CovenantContractRuntime.build_spend_items(
+                tx_hex, input_index, txin.prev_script, txin.value, int(amount),
+                [owner_public_key, metadata["whitelist"], metadata["max_fee"]])
 
     def obtain_supporting_data(self, tx: Transaction, tx_context: TransactionContext) -> None:
         # Called by the signing logic to ensure all the required data is present.
@@ -2992,6 +3113,57 @@ class Wallet(TriggeredCallbacks):
     def set_boolean_setting(self, setting_name: str, enabled: bool) -> None:
         self._storage.put(setting_name, enabled)
         self.trigger_callback('on_setting_changed', setting_name, enabled)
+
+    def get_vault_contract_whitelist_for_script(self, script: Script) -> Optional[str]:
+        metadata = self.get_vault_contract_metadata_for_script(script)
+        if metadata is not None:
+            return metadata["whitelist"]
+        return None
+
+    def get_vault_contract_metadata_for_script(self, script: Script) -> Optional[dict]:
+        script_key = scripthash_hex(script)
+        whitelist_map = self._storage.get("vault_contract_whitelist_map", {})
+        if not isinstance(whitelist_map, dict):
+            whitelist_map = {}
+
+        raw_entry = whitelist_map.get(script_key)
+        if raw_entry is not None:
+            metadata = CovenantContractRuntime.parse_contract_metadata(raw_entry)
+            if metadata is not None:
+                if metadata != raw_entry:
+                    whitelist_map[script_key] = metadata
+                    self._storage.put("vault_contract_whitelist_map", whitelist_map)
+                return metadata
+            normalized = CovenantContractRuntime.parse_whitelist_map_value(raw_entry)
+            if normalized is not None:
+                metadata = CovenantContractRuntime.build_contract_metadata(
+                    normalized, normalized, CovenantContractRuntime.DEFAULT_MAX_FEE)
+                whitelist_map[script_key] = metadata
+                self._storage.put("vault_contract_whitelist_map", whitelist_map)
+                return metadata
+        return None
+
+    def set_vault_contract_whitelist(self, script: Script, whitelist_address: str, max_fee: int,
+            owner_address: str, owner_keyinstance_id: Optional[int]=None,
+            owner_public_key: Optional[str]=None) -> None:
+        metadata = CovenantContractRuntime.build_contract_metadata(
+            owner_address, whitelist_address, max_fee, owner_keyinstance_id, owner_public_key)
+        script_key = scripthash_hex(script)
+        key = "vault_contract_whitelist_map"
+        whitelists = self._storage.get(key, {})
+        if not isinstance(whitelists, dict):
+            whitelists = {}
+        existing_metadata = self.get_vault_contract_metadata_for_script(script)
+        if existing_metadata is not None and existing_metadata != metadata:
+            raise ValueError(_("Cannot change metadata for an existing vault contract output"))
+        whitelists[script_key] = metadata
+        self._storage.put(key, whitelists)
+
+    def get_vault_contract_whitelist_for_utxo(self, utxo: 'UTXO') -> Optional[str]:
+        return self.get_vault_contract_whitelist_for_script(utxo.script_pubkey)
+
+    def get_vault_contract_metadata_for_utxo(self, utxo: 'UTXO') -> Optional[dict]:
+        return self.get_vault_contract_metadata_for_script(utxo.script_pubkey)
 
     def get_cache_size_for_tx_bytedata(self) -> int:
         """

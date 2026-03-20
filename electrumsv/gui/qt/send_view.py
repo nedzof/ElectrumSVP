@@ -38,14 +38,18 @@ from PyQt5.QtCore import pyqtSignal, Qt, QStringListModel
 from PyQt5.QtWidgets import (QCheckBox, QCompleter, QGridLayout, QGroupBox, QHBoxLayout, QMenu,
     QLabel, QSizePolicy, QTreeView, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from electrumsv.bitcoin import script_template_to_string
 from electrumsv.app_state import app_state
-from electrumsv.constants import PaymentFlag, WalletSettings
+from electrumsv.constants import PaymentFlag, PREFIX_ASM_SCRIPT, RECEIVING_SUBPATH, WalletSettings
 from electrumsv.exceptions import ExcessiveFee, NotEnoughFunds
 from electrumsv.i18n import _
 from electrumsv.logs import logs
+from electrumsv.networks import Net
+from electrumsv.bip276 import PREFIX_BIP276_SCRIPT
 from electrumsv.paymentrequest import has_expired, PaymentRequest
 from electrumsv.transaction import Transaction, XTxOutput
 from electrumsv.util import format_satoshis_plain
+from electrumsv.vault_contract import CovenantContractRuntime
 from electrumsv.wallet import AbstractAccount, UTXO
 from electrumsv.wallet_database.tables import InvoiceRow
 
@@ -139,6 +143,41 @@ class SendView(QWidget):
         grid.addWidget(payto_label, 2, 0)
         grid.addWidget(self._payto_e, 2, 1, 1, -1)
 
+        msg = (_('Lock this send as a covenant lock input, and auto-select a vault destination. '
+                 'Any future spend of those covenant outputs is then constrained to the whitelisted '
+                 'address captured here.'))
+        self._vault_lock_checkbox = QCheckBox(_('Use covenant lock'), self)
+        self._vault_lock_checkbox.stateChanged.connect(self._on_vault_lock_toggled)
+        vault_label = HelpLabel(_('Vault lock'), msg, self)
+        vault_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        grid.addWidget(vault_label, 3, 0)
+        grid.addWidget(self._vault_lock_checkbox, 3, 1)
+
+        self._vault_whitelist_label = HelpLabel(_('Vault whitelist destination'),
+            _('Press New to preselect the next unused receive address.'), self)
+        self._vault_whitelist_e = MyLineEdit(self)
+        self._vault_whitelist_e.setReadOnly(True)
+        self._vault_refresh_button = EnterButton(_("New"), self._refresh_vault_whitelist, self)
+        self._vault_owner_label = HelpLabel(_('Vault owner key'),
+            _('Fresh account key used to authorize future vault spends.'), self)
+        self._vault_owner_e = MyLineEdit(self)
+        self._vault_owner_e.setReadOnly(True)
+        self._vault_max_fee_label = HelpLabel(_('Vault max fee'),
+            _('Maximum miner fee allowed for a future vault spend, in satoshis.'), self)
+        self._vault_max_fee_e = MyLineEdit(self)
+        self._vault_max_fee_e.setText(str(CovenantContractRuntime.DEFAULT_MAX_FEE))
+        self._vault_max_fee_e.textChanged.connect(self._update_vault_lock_script)
+        self._vault_whitelist_keyinstance_id: Optional[int] = None
+        self._vault_owner_keyinstance_id: Optional[int] = None
+        self._update_vault_controls(False)
+        grid.addWidget(self._vault_whitelist_label, 4, 0)
+        grid.addWidget(self._vault_whitelist_e, 4, 1)
+        grid.addWidget(self._vault_refresh_button, 4, 3)
+        grid.addWidget(self._vault_owner_label, 5, 0)
+        grid.addWidget(self._vault_owner_e, 5, 1, 1, -1)
+        grid.addWidget(self._vault_max_fee_label, 6, 0)
+        grid.addWidget(self._vault_max_fee_e, 6, 1)
+
         msg = (_('Amount to be sent.') + '\n\n' +
                _('The amount will be displayed in red if you do not have '
                  'enough funds in your wallet.') + ' '
@@ -146,19 +185,19 @@ class SendView(QWidget):
                    'funds will be lower than your total balance.') + '\n\n'
                + _('Keyboard shortcut: type "!" to send all your coins.'))
         amount_label = HelpLabel(_('Amount'), msg, self)
-        grid.addWidget(amount_label, 3, 0)
-        grid.addWidget(self.amount_e, 3, 1)
+        grid.addWidget(amount_label, 7, 0)
+        grid.addWidget(self.amount_e, 7, 1)
 
         self._fiat_send_e = AmountEdit(app_state.fx.get_currency if app_state.fx else '', self)
         self.set_fiat_ccy_enabled(bool(app_state.fx and app_state.fx.is_enabled()))
 
-        grid.addWidget(self._fiat_send_e, 3, 2)
+        grid.addWidget(self._fiat_send_e, 7, 2)
         self.amount_e.frozen.connect(
             lambda: self._fiat_send_e.setFrozen(self.amount_e.isReadOnly()))
 
         self._max_button = EnterButton(_("Max"), self._spend_max, self)
         self._max_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        grid.addWidget(self._max_button, 3, 3)
+        grid.addWidget(self._max_button, 7, 3)
 
         completer = QCompleter()
         completer.setCaseSensitivity(False)
@@ -169,9 +208,9 @@ class SendView(QWidget):
                _('The description is not sent to the recipient of the funds. '
                  'It is stored in your wallet file, and displayed in the \'History\' tab.'))
         description_label = HelpLabel(_('Description'), msg, self)
-        grid.addWidget(description_label, 4, 0)
+        grid.addWidget(description_label, 9, 0)
         self._message_e = MyLineEdit(self)
-        grid.addWidget(self._message_e, 4, 1, 1, -1)
+        grid.addWidget(self._message_e, 9, 1, 1, -1)
 
         self._main_window.connect_fields(self.amount_e, self._fiat_send_e)
 
@@ -186,7 +225,7 @@ class SendView(QWidget):
             if state != Qt.Checked:
                 dialogs.show_named('sv-only-disabled')
         self._coinsplitting_checkbox.stateChanged.connect(coinsplitting_checkbox_cb)
-        grid.addWidget(self._coinsplitting_checkbox, 5, 1, 1, -1)
+        grid.addWidget(self._coinsplitting_checkbox, 8, 1, 1, -1)
 
         self._help_button = HelpDialogButton(self, "misc", "send-tab", _("Help"))
         self._preview_button = EnterButton(_("Preview"), self._do_preview, self)
@@ -207,7 +246,7 @@ class SendView(QWidget):
         buttons.addWidget(self._preview_button)
         buttons.addWidget(self._send_button)
         buttons.addStretch(1)
-        grid.addLayout(buttons, 7, 0, 1, -1)
+        grid.addLayout(buttons, 10, 0, 1, -1)
 
         self.amount_e.shortcut.connect(self._spend_max)
         self._payto_e.textChanged.connect(self.update_fee)
@@ -351,6 +390,13 @@ class SendView(QWidget):
         self._max_button.setDisabled(False)
         self.set_pay_from([])
         self._coinsplitting_checkbox.setChecked(True)
+        self._vault_lock_checkbox.setChecked(False)
+        self._vault_whitelist_e.setText('')
+        self._vault_owner_e.setText('')
+        self._vault_whitelist_keyinstance_id = None
+        self._vault_owner_keyinstance_id = None
+        self._vault_max_fee_e.setText(str(CovenantContractRuntime.DEFAULT_MAX_FEE))
+        self._update_vault_controls(False)
 
         # TODO: Revisit what this does.
         self._main_window.update_status_bar()
@@ -416,9 +462,19 @@ class SendView(QWidget):
                 if output_script is None:
                     output_script = self._account.get_dummy_script_template().to_script()
                 outputs = [XTxOutput(amount, output_script)]
+            if self._vault_lock_checkbox.isChecked() and not self._is_vault_lock_output():
+                return
 
             coins = self._get_coins()
-            outputs.extend(self._account.create_extra_outputs(coins, outputs))
+            vault_plan = self._get_vault_send_plan(coins, False)
+            if vault_plan is None and len([u for u in coins
+                    if self._account.get_vault_contract_whitelist_for_utxo(u) is not None]):
+                return
+            if vault_plan is not None:
+                outputs = [ self._vault_send_output(all, vault_plan) ]
+
+            extra_outputs = [] if vault_plan is not None else self._account.create_extra_outputs(coins, outputs)
+            outputs.extend(extra_outputs)
             try:
                 tx = self._account.make_unsigned_transaction(self._get_coins(), outputs,
                     self._main_window.config, fee)
@@ -458,7 +514,9 @@ class SendView(QWidget):
             return
 
         outputs, fee, tx_desc, coins = r
-        outputs.extend(self._account.create_extra_outputs(coins, outputs))
+        vault_plan = self._get_vault_send_plan(coins)
+        if vault_plan is None:
+            outputs.extend(self._account.create_extra_outputs(coins, outputs))
         try:
             tx = self._account.make_unsigned_transaction(coins, outputs, self._main_window.config,
                 fee)
@@ -509,7 +567,165 @@ class SendView(QWidget):
 
         fee = None
         coins = self._get_coins()
+        if self._vault_lock_checkbox.isChecked() and not self._vault_whitelist_e.text().strip():
+            self._main_window.show_error(_('No vault whitelist destination is set'))
+            return
+        if self._vault_lock_checkbox.isChecked() and not self._vault_owner_e.text().strip():
+            self._main_window.show_error(_('No vault owner key is set'))
+            return
+        if self._vault_lock_checkbox.isChecked() and len(outputs) != 1:
+            self._main_window.show_error(_('Vault lock requires exactly one contract output'))
+            return
+        if self._vault_lock_checkbox.isChecked() and self._get_vault_max_fee() is None:
+            self._main_window.show_error(_('Vault max fee must be a non-negative integer'))
+            return
+
+        if self._vault_lock_checkbox.isChecked():
+            self._register_vault_lock_outputs(outputs)
+
+        vault_plan = self._get_vault_send_plan(coins)
+        if vault_plan is not None:
+            outputs = [ self._vault_send_output(all, vault_plan) ]
+
         return outputs, fee, label, coins
+
+    def _on_vault_lock_toggled(self, state: int) -> None:
+        enabled = state == Qt.Checked
+        self._update_vault_controls(enabled)
+        self._payto_e.setReadOnly(enabled)
+        if not enabled:
+            self._vault_whitelist_e.setText('')
+            self._vault_owner_e.setText('')
+            self._vault_whitelist_keyinstance_id = None
+            self._vault_owner_keyinstance_id = None
+            return
+        self._refresh_vault_whitelist()
+
+    def _update_vault_controls(self, enabled: bool) -> None:
+        self._vault_whitelist_label.setVisible(enabled)
+        self._vault_whitelist_e.setVisible(enabled)
+        self._vault_refresh_button.setVisible(enabled)
+        self._vault_owner_label.setVisible(enabled)
+        self._vault_owner_e.setVisible(enabled)
+        self._vault_max_fee_label.setVisible(enabled)
+        self._vault_max_fee_e.setVisible(enabled)
+
+    def _refresh_vault_whitelist(self) -> None:
+        if self._account.is_watching_only():
+            self._report_vault_send_error(_('Watching-only accounts cannot create vault whitelist entries'))
+            self._vault_lock_checkbox.setChecked(False)
+            return
+        try:
+            key_instances = self._account.get_fresh_keys(RECEIVING_SUBPATH, 2)
+        except Exception:
+            self._report_vault_send_error(_('Unable to derive a new vault whitelist destination'))
+            self._vault_lock_checkbox.setChecked(False)
+            return
+        if len(key_instances) < 2:
+            self._report_vault_send_error(_('No vault whitelist destination could be generated'))
+            self._vault_lock_checkbox.setChecked(False)
+            return
+
+        whitelist_key = key_instances[0]
+        owner_key = key_instances[1]
+        whitelist_template = self._account.get_script_template_for_id(whitelist_key.keyinstance_id)
+        owner_template = self._account.get_script_template_for_id(owner_key.keyinstance_id)
+        self._vault_whitelist_keyinstance_id = whitelist_key.keyinstance_id
+        self._vault_owner_keyinstance_id = owner_key.keyinstance_id
+        self._vault_whitelist_e.setText(script_template_to_string(whitelist_template))
+        self._vault_owner_e.setText(script_template_to_string(owner_template))
+        self._update_vault_lock_script()
+
+    def _get_vault_max_fee(self) -> Optional[int]:
+        text = self._vault_max_fee_e.text().strip()
+        if not text:
+            return None
+        try:
+            value = int(text)
+        except ValueError:
+            return None
+        if value < 0:
+            return None
+        return value
+
+    def _update_vault_lock_script(self) -> None:
+        if not self._vault_lock_checkbox.isChecked():
+            return
+        whitelist = self._vault_whitelist_e.text().strip()
+        max_fee = self._get_vault_max_fee()
+        if not whitelist or self._vault_owner_keyinstance_id is None or max_fee is None:
+            return
+        try:
+            owner_public_key = self._account.get_public_keys_for_id(
+                self._vault_owner_keyinstance_id)[0].to_hex()
+            script_text = CovenantContractRuntime.build_contract_locking_script_text(
+                owner_public_key, whitelist, max_fee)
+        except Exception as e:
+            self._report_vault_send_error(str(e))
+            return
+        self._payto_e.setPlainText(script_text)
+        self.update_fee()
+
+    def _get_vault_send_plan(self, coins: List[UTXO], strict: bool=True) -> Optional[str]:
+        whitelist_by_input = []
+        for utxo in coins:
+            whitelist = self._account.get_vault_contract_whitelist_for_utxo(utxo)
+            if whitelist is not None:
+                whitelist_by_input.append(whitelist)
+
+        if not whitelist_by_input:
+            return None
+        if len(whitelist_by_input) > 1:
+            if strict:
+                self._report_vault_send_error(
+                    _('Vault spends currently support exactly one vault UTXO per transaction'))
+            return None
+        if len(whitelist_by_input) != len(coins):
+            if strict:
+                self._report_vault_send_error(
+                    _('Vault UTXOs cannot be combined with regular UTXOs in one transaction'))
+            return None
+        unique_whitelists = set(whitelist_by_input)
+        if len(unique_whitelists) != 1:
+            if strict:
+                self._report_vault_send_error(
+                    _('Selected vault UTXOs are bound to different whitelist destinations'))
+            return None
+        return next(iter(unique_whitelists))
+
+    def _vault_send_output(self, amount: Any, whitelist_address: str) -> XTxOutput:
+        whitelist_script = Address.from_string(whitelist_address, Net.COIN).to_script()
+        return XTxOutput(amount, whitelist_script)
+
+    def _register_vault_lock_outputs(self, outputs: List[XTxOutput]) -> None:
+        whitelist = self._vault_whitelist_e.text().strip()
+        owner_address = self._vault_owner_e.text().strip()
+        max_fee = self._get_vault_max_fee()
+        if not owner_address:
+            self._report_vault_send_error(_('Vault owner key is missing'))
+            return
+        if self._vault_owner_keyinstance_id is None:
+            self._report_vault_send_error(_('Vault owner key metadata is missing'))
+            return
+        if max_fee is None:
+            self._report_vault_send_error(_('Vault max fee must be a non-negative integer'))
+            return
+        if len(outputs) != 1:
+            self._report_vault_send_error(_('Vault lock requires exactly one script output'))
+            return
+        for output in outputs:
+            self._account.set_vault_contract_whitelist(output.script_pubkey, whitelist, max_fee,
+                owner_address, self._vault_owner_keyinstance_id,
+                self._account.get_public_keys_for_id(self._vault_owner_keyinstance_id)[0].to_hex())
+
+    def _is_vault_lock_output(self) -> bool:
+        payto_text = self._payto_e.toPlainText().strip().split('\n')[0].strip()
+        return payto_text.startswith(PREFIX_BIP276_SCRIPT + ':') or \
+            payto_text.startswith(PREFIX_ASM_SCRIPT)
+
+    def _report_vault_send_error(self, message: str) -> None:
+        if message:
+            self._main_window.show_error(message)
 
     def _get_coins(self) -> List[UTXO]:
         if self.pay_from:

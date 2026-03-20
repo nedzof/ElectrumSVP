@@ -52,6 +52,27 @@ dummy_signature = bytes(72)
 logger = logs.get_logger("transaction")
 
 
+def _install_to_address_compatibility() -> None:
+    def _patch(klass) -> None:
+        original = klass.to_address
+
+        def wrapped(self, *args, **kwargs):
+            if "coin" in kwargs and "network" not in kwargs:
+                kwargs["network"] = kwargs.pop("coin")
+            return original(self, *args, **kwargs)
+
+        klass.to_address = wrapped
+
+    for klass in (PublicKey, BIP32PublicKey):
+        if "coin" not in klass.to_address.__code__.co_varnames:
+            _patch(klass)
+    if not hasattr(Address, "coin"):
+        Address.coin = Address.network
+
+
+_install_to_address_compatibility()
+
+
 class TxSerialisationFormat(enum.IntEnum):
     RAW = 0
     HEX = 1
@@ -245,7 +266,14 @@ class XPublicKey:
         raise ValueError("invalid key data")
 
     def to_address(self) -> Address:
-        return self.to_public_key().to_address(coin=Net.COIN)
+        public_key = self.to_public_key()
+        try:
+            return public_key.to_address(coin=Net.COIN)
+        except TypeError:
+            try:
+                return public_key.to_address(Net.COIN)
+            except TypeError:
+                return public_key.to_address()
 
     def is_compressed(self) -> bool:
         if self._bip32_xpub:
@@ -271,7 +299,9 @@ class XTxInput(TxInput):
     threshold: int = attr.ib(default=0)
     signatures: List[bytes] = attr.ib(default=attr.Factory(list))
     script_type: ScriptType = attr.ib(default=ScriptType.NONE)
+    prev_script: Optional[Script] = attr.ib(default=None)
     keyinstance_id: Optional[int] = attr.ib(default=None)
+    contract_args: List[bytes] = attr.ib(default=attr.Factory(list))
 
     @classmethod
     def read_extended(cls, read):
@@ -294,7 +324,7 @@ class XTxInput(TxInput):
             # NOTE(typing) Trying to assign name "script_sig" that is not in "__slots__" of type
             #     "electrumsv.transaction.XTxInput"
             self.script_sig = create_script_sig(self.script_type, self.threshold, # type: ignore
-                self.x_pubkeys, self.signatures)
+                self.x_pubkeys, self.signatures, self.contract_args)
         return super().to_bytes()
 
     def signatures_present(self) -> List[bytes]:
@@ -322,7 +352,8 @@ class XTxInput(TxInput):
         saved_script_sig = self.script_sig
         x_pubkeys = [x_pubkey.to_public_key() for x_pubkey in self.x_pubkeys]
         signatures = [dummy_signature] * self.threshold
-        self.script_sig = create_script_sig(self.script_type, self.threshold, x_pubkeys, signatures)
+        self.script_sig = create_script_sig(self.script_type, self.threshold, x_pubkeys, signatures,
+            self.contract_args)
         size = self.size()
         self.script_sig = saved_script_sig
         return size
@@ -340,7 +371,8 @@ class XTxInput(TxInput):
             f'XTxInput(prev_hash="{hash_to_hex_str(self.prev_hash)}", prev_idx={self.prev_idx}, '
             f'script_sig="{self.script_sig}", sequence={self.sequence}), value={self.value}, '
             f'threshold={self.threshold}, '
-            f'script_type={self.script_type}, x_pubkeys={self.x_pubkeys}), '
+            f'script_type={self.script_type}, contract_args={self.contract_args}, '
+            f'x_pubkeys={self.x_pubkeys}), '
             f'keyinstance_id={self.keyinstance_id}'
         )
 
@@ -435,7 +467,10 @@ def bare_multisignatures(threshold: int, signatures: List[bytes]) -> List[bytes]
 
 
 def create_script_sig(script_type: ScriptType, threshold: int, x_pubkeys: List[XPublicKey],
-        signatures: List[bytes]) -> Script:
+        signatures: List[bytes], contract_args: Optional[List[bytes]]=None) -> Script:
+    if contract_args is None:
+        contract_args = []
+
     if script_type == ScriptType.P2PK:
         return Script(push_item(signatures[0]))
     elif script_type == ScriptType.P2PKH:
@@ -465,6 +500,10 @@ def create_script_sig(script_type: ScriptType, threshold: int, x_pubkeys: List[X
                 ])
         parts.reverse()
         return Script(b''.join([ value for l in parts for value in l ]))
+    elif script_type == ScriptType.NONE:
+        parts = [ push_item(arg) for arg in contract_args ]
+        parts.extend(push_item(signature) for signature in signatures if signature != NO_SIGNATURE)
+        return Script(b''.join(parts))
     raise ValueError(f"unable to realize script {script_type}")
 
 
@@ -501,6 +540,12 @@ def parse_script_sig(script: bytes, kwargs: Dict[str, Any]) -> None:
     # p2sh transaction, m of n
     match = [ Ops.OP_0 ] + [ Ops.OP_PUSHDATA4 ] * (len(decoded) - 1)
     if not _match_decoded(decoded, match):
+        if all(op <= Ops.OP_PUSHDATA4 for op, _, _ in decoded):
+            kwargs['signatures'] = [ decoded[-1][1] ] if decoded else []
+            kwargs['contract_args'] = [ item[1] for item in decoded[:-1] ]
+            kwargs['threshold'] = 1
+            kwargs['script_type'] = ScriptType.NONE
+            return
         logger.error("cannot find address in input script %s", script.hex())
         return
 
@@ -642,6 +687,13 @@ class Transaction(Tx):
             x_pubkey = txin.x_pubkeys[0]
             script = x_pubkey.to_public_key().P2PK_script()
             return script.to_bytes()
+        elif _type == ScriptType.NONE:
+            if txin.prev_script is not None:
+                return txin.prev_script.to_bytes()
+            if txin.prev_hash in self.context.prev_txs:
+                prev_tx = self.context.prev_txs[txin.prev_hash]
+                return prev_tx.outputs[txin.prev_idx].script_pubkey.to_bytes()
+            raise RuntimeError('cannot determine preimage script for NONE input')
         else:
             raise RuntimeError('Unknown txin type', _type)
 
@@ -741,6 +793,8 @@ class Transaction(Tx):
                     txin.value = int(input_data[i]['value'])
                     txin.signatures = [ bytes.fromhex(v) for v in input_data[i]['signatures'] ]
                     txin.x_pubkeys = [ XPublicKey.from_dict(v) for v in input_data[i]['x_pubkeys']]
+                    txin.contract_args = [ bytes.fromhex(v)
+                        for v in input_data[i].get('contract_args', []) ]
             output_data: Optional[List[Dict[str, Any]]] = data.get('outputs')
             if output_data is not None:
                 assert len(tx.outputs) == len(output_data)
@@ -776,6 +830,8 @@ class Transaction(Tx):
                 input_entry['value'] = txin.value
                 input_entry['signatures'] = [ sig.hex() for sig in txin.signatures ]
                 input_entry['x_pubkeys'] = [ xpk.to_dict() for xpk in txin.x_pubkeys ]
+                if txin.contract_args:
+                    input_entry['contract_args'] = [ arg.hex() for arg in txin.contract_args ]
                 out['inputs'].append(input_entry)
             output_data = []
             if any(len(o.x_pubkeys) for o in self.outputs):
@@ -799,4 +855,3 @@ class Transaction(Tx):
             # final serialisation step.
             return self.to_dict()
         raise NotImplementedError(f"unhanded format {format}")
-

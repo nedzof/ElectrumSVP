@@ -1,0 +1,392 @@
+{
+  "version": "runar-v0.1.0",
+  "compilerVersion": "0.1.0",
+  "contractName": "VaultWhitelist",
+  "abi": {
+    "constructor": {
+      "params": [
+        {
+          "name": "owner",
+          "type": "PubKey"
+        },
+        {
+          "name": "whitelist",
+          "type": "Addr"
+        },
+        {
+          "name": "maxFee",
+          "type": "bigint"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "spend",
+        "params": [
+          {
+            "name": "payoutAmount",
+            "type": "bigint"
+          },
+          {
+            "name": "txPreimage",
+            "type": "SigHashPreimage"
+          },
+          {
+            "name": "sig",
+            "type": "Sig"
+          }
+        ],
+        "isPublic": true
+      }
+    ]
+  },
+  "script": "00ad76ab537a210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ad697800a06976820134947f77587f7581527978a16952799400a169041976a914007e0288ac7e7b58807c7eaa7c820128947f7701207f7587",
+  "asm": "OP_0 OP_CHECKSIGVERIFY OP_DUP OP_CODESEPARATOR OP_3 OP_ROLL <0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798> OP_CHECKSIGVERIFY OP_VERIFY OP_OVER OP_0 OP_GREATERTHAN OP_VERIFY OP_DUP OP_SIZE <34> OP_SUB OP_SPLIT OP_NIP OP_8 OP_SPLIT OP_DROP OP_BIN2NUM OP_2 OP_PICK OP_OVER OP_LESSTHANOREQUAL OP_VERIFY OP_2 OP_PICK OP_SUB OP_0 OP_LESSTHANOREQUAL OP_VERIFY <1976a914> OP_0 OP_CAT <88ac> OP_CAT OP_ROT OP_8 OP_NUM2BIN OP_SWAP OP_CAT OP_HASH256 OP_SWAP OP_SIZE <28> OP_SUB OP_SPLIT OP_NIP <20> OP_SPLIT OP_DROP OP_EQUAL",
+  "buildTimestamp": "2026-03-20T12:50:17.939Z",
+  "sourceMap": {
+    "mappings": [
+      {
+        "opcodeIndex": 0,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 21,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 2,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 3,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 4,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 5,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 6,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 7,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 8,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 22,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 9,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 23,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 10,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 23,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 11,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 23,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 12,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 23,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 13,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 14,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 15,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 16,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 17,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 18,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 19,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 20,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 21,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 22,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 25,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 23,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 26,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 24,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 26,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 25,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 26,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 26,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 26,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 27,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 26,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 28,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 27,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 29,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 27,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 30,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 27,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 31,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 27,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 32,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 27,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 33,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 27,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 34,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 29,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 35,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 29,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 36,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 29,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 37,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 29,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 38,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 29,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 39,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 30,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 40,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 30,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 41,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 30,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 42,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 30,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 43,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 30,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 44,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 45,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 46,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 47,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 48,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 49,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 50,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 51,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 52,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 53,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      },
+      {
+        "opcodeIndex": 54,
+        "sourceFile": "/home/caruk/electrumsvp/contrib/vault_whitelist_contract/src/contracts/VaultWhitelist.runar.py",
+        "line": 31,
+        "column": 9
+      }
+    ]
+  },
+  "constructorSlots": [
+    {
+      "paramIndex": 0,
+      "byteOffset": 0
+    },
+    {
+      "paramIndex": 2,
+      "byteOffset": 65
+    },
+    {
+      "paramIndex": 1,
+      "byteOffset": 73
+    }
+  ],
+  "codeSeparatorIndex": 3,
+  "codeSeparatorIndices": [
+    3
+  ]
+}
