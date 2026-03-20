@@ -201,6 +201,35 @@ def test_send_view_vault_toggle_populates_real_widgets() -> None:
         app_state.set_proxy(previous_state)
 
 
+def test_send_view_vault_new_button_allocates_distinct_keys() -> None:
+    _ensure_qapplication()
+    previous_state = _install_fake_app_state()
+    Net.set_to(SVMainnet)
+    wallet, account = _create_wallet_account()
+    try:
+        wallet.set_boolean_setting(WalletSettings.ADD_SV_OUTPUT, False)
+        main_window = _DummyMainWindow(wallet)
+        view = SendView(main_window, account.get_id())
+
+        view._vault_lock_checkbox.setChecked(True)
+        view._on_vault_lock_toggled(Qt.Checked)
+        first_whitelist = view._vault_whitelist_e.text().strip()
+        first_owner_id = view._vault_owner_keyinstance_id
+
+        view._refresh_vault_whitelist()
+        second_whitelist = view._vault_whitelist_e.text().strip()
+        second_owner_id = view._vault_owner_keyinstance_id
+
+        assert second_whitelist
+        assert first_whitelist != second_whitelist
+        assert first_owner_id is not None
+        assert second_owner_id is not None
+        assert first_owner_id != second_owner_id
+    finally:
+        wallet.stop()
+        app_state.set_proxy(previous_state)
+
+
 def test_send_view_registers_vault_metadata_with_real_view() -> None:
     _ensure_qapplication()
     previous_state = _install_fake_app_state()

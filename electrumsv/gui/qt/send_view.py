@@ -40,7 +40,8 @@ from PyQt5.QtWidgets import (QCheckBox, QCompleter, QGridLayout, QGroupBox, QHBo
 
 from electrumsv.bitcoin import script_template_to_string
 from electrumsv.app_state import app_state
-from electrumsv.constants import PaymentFlag, PREFIX_ASM_SCRIPT, RECEIVING_SUBPATH, WalletSettings
+from electrumsv.constants import (PaymentFlag, PREFIX_ASM_SCRIPT, RECEIVING_SUBPATH, ScriptType,
+    WalletSettings)
 from electrumsv.exceptions import ExcessiveFee, NotEnoughFunds
 from electrumsv.i18n import _
 from electrumsv.logs import logs
@@ -616,7 +617,7 @@ class SendView(QWidget):
             self._vault_lock_checkbox.setChecked(False)
             return
         try:
-            key_instances = self._account.get_fresh_keys(RECEIVING_SUBPATH, 2)
+            key_instances = self._account.create_keys(2, RECEIVING_SUBPATH, ScriptType.NONE)
         except Exception:
             self._report_vault_send_error(_('Unable to derive a new vault whitelist destination'))
             self._vault_lock_checkbox.setChecked(False)
