@@ -1,4 +1,5 @@
 import os
+import random
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -105,16 +106,47 @@ def test_benford_tab_builds_preview_and_broadcasts_transaction() -> None:
         main_window.account_change_signal.emit(account.get_id(), account)
 
         tab._privacy_slider.setValue(4)
+        tab._min_split_value.setValue(2_000)
+        tab._max_split_value.setValue(20_000)
         tab._on_split_clicked()
 
         preview_text = tab._preview_edit.toPlainText()
         assert "Selected inputs" in preview_text
+        assert "Benford MAD" in preview_text
         assert "Output amounts" in preview_text
         assert len(main_window.question_prompts) == 1
         assert len(main_window.password_requests) == 1
         assert len(main_window.broadcasts) == 1
         broadcast_tx = main_window.broadcasts[0][1]
         assert broadcast_tx.is_complete()
+        assert max(output.value for output in broadcast_tx.outputs) <= 20_000
+    finally:
+        wallet.stop()
+        app_state.set_proxy(previous_state)
+
+
+def test_benford_tab_random_button_prefills_ranges() -> None:
+    _ensure_qapplication()
+    previous_state = _install_fake_app_state()
+    Net.set_to(SVMainnet)
+    wallet, account = _create_wallet_account()
+    try:
+        main_window = _DummyMainWindow(wallet, account)
+        tab = BenfordTab(main_window)
+        main_window.account_change_signal.emit(account.get_id(), account)
+
+        tab._privacy_slider.setValue(4)
+        random.seed(7)
+        tab._on_randomize_clicked()
+
+        assert tab._min_age_days.value() >= 0
+        assert tab._max_age_days.value() >= tab._min_age_days.value()
+        assert tab._min_utxo_value.value() >= 0
+        assert tab._max_utxo_value.value() == 0 or \
+            tab._max_utxo_value.value() >= tab._min_utxo_value.value()
+        assert tab._min_split_value.value() > 0
+        assert tab._max_split_value.value() >= tab._min_split_value.value()
+        assert tab._preview_edit.toPlainText() == ""
     finally:
         wallet.stop()
         app_state.set_proxy(previous_state)

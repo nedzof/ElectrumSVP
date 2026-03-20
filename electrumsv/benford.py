@@ -1,7 +1,6 @@
-import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Counter as CounterType, List, Optional, Sequence
+from typing import Counter as CounterType, Dict, List, Optional, Sequence
 
 from .constants import RECEIVING_SUBPATH
 from .exceptions import NotEnoughFunds
@@ -45,6 +44,8 @@ class BenfordSettings:
     max_age_days: int = 0
     min_utxo_value: int = 0
     max_utxo_value: int = 0
+    min_split_value: int = 0
+    max_split_value: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,11 +54,15 @@ class BenfordPlan:
     utxos: Sequence[UTXO]
     output_values: Sequence[int]
     first_digit_counts: CounterType[int]
+    first_digit_ratios: Dict[int, float]
+    benford_mad: float
     privacy_level: int
     min_age_days: int
     max_age_days: int
     min_utxo_value: int
     max_utxo_value: int
+    min_split_value: int
+    max_split_value: int
 
 
 def _leading_digit(value: int) -> int:
@@ -94,6 +99,9 @@ def filter_benford_utxos(account: AbstractAccount, settings: BenfordSettings,
     if settings.min_utxo_value and settings.max_utxo_value and \
             settings.min_utxo_value > settings.max_utxo_value:
         raise ValueError(_("Minimum UTXO value cannot exceed maximum UTXO value."))
+    if settings.min_split_value and settings.max_split_value and \
+            settings.min_split_value > settings.max_split_value:
+        raise ValueError(_("Minimum split value cannot exceed maximum split value."))
 
     if utxos is None:
         utxos = account.get_utxos(exclude_frozen=True, mature=True, confirmed_only=True)
@@ -155,16 +163,20 @@ def _choose_benford_amount(digit: int, minimum_value: int, maximum_value: int) -
     return candidate
 
 
-def _target_output_count(total_value: int, dust_threshold: int, privacy_level: int) -> int:
+def _target_output_count(total_value: int, dust_threshold: int, privacy_level: int,
+        maximum_output_value: Optional[int]=None) -> int:
     privacy_level = max(1, min(5, privacy_level))
     requested_count = PRIVACY_OUTPUT_COUNTS[privacy_level]
     max_count_by_value = max(2, min(24, total_value // max(dust_threshold * 2, 1000)))
-    return max(2, min(requested_count, max_count_by_value))
+    minimum_count_for_cap = 2
+    if maximum_output_value is not None and maximum_output_value > 0:
+        minimum_count_for_cap = max(2, (total_value + maximum_output_value - 1) // maximum_output_value)
+    return max(minimum_count_for_cap, min(requested_count, max_count_by_value))
 
 
 def _build_fixed_amounts(total_value: int, output_count: int, dust_threshold: int,
-        privacy_level: int) -> List[int]:
-    minimum_output_value = max(dust_threshold, 546)
+        privacy_level: int, minimum_output_value: int, maximum_output_value: Optional[int]) \
+            -> List[int]:
     fixed_amounts: List[int] = []
     remaining_value = total_value
     factors = PRIVACY_FACTORS[max(1, min(5, privacy_level))]
@@ -174,18 +186,29 @@ def _build_fixed_amounts(total_value: int, output_count: int, dust_threshold: in
         reserved_for_last_output = minimum_output_value
         reserved_for_other_fixed_outputs = minimum_output_value * (fixed_outputs_remaining - 1)
         maximum_value = remaining_value - reserved_for_last_output - reserved_for_other_fixed_outputs
+        minimum_value = minimum_output_value
         if maximum_value < minimum_output_value:
             raise NotEnoughFunds()
+        if maximum_output_value is not None:
+            maximum_value = min(maximum_value, maximum_output_value)
+            minimum_value = max(minimum_value,
+                remaining_value - (fixed_outputs_remaining * maximum_output_value))
+            if maximum_value < minimum_output_value:
+                raise NotEnoughFunds()
+            if maximum_value < minimum_value:
+                raise NotEnoughFunds()
 
         quantile = (output_index + 0.5) / max(output_count - 1, 1)
         digit = _quantile_digit(quantile)
-        average_target = max(minimum_output_value, maximum_value // (fixed_outputs_remaining + 1))
+        average_target = max(minimum_value, maximum_value // (fixed_outputs_remaining + 1))
         factor = factors[output_index % len(factors)]
-        target_value = max(minimum_output_value, int(average_target * factor))
+        target_value = max(minimum_value, int(average_target * factor))
         target_value = min(target_value, maximum_value)
-        amount = _choose_benford_amount(digit, minimum_output_value, target_value)
+        amount = _choose_benford_amount(digit, minimum_value, target_value)
         if amount is None:
-            raise NotEnoughFunds()
+            amount = minimum_value
+            if amount > maximum_value:
+                raise NotEnoughFunds()
         fixed_amounts.append(amount)
         remaining_value -= amount
 
@@ -207,6 +230,17 @@ def _build_first_digit_counts(values: Sequence[int]) -> CounterType[int]:
     return Counter(_leading_digit(value) for value in values if value > 0)
 
 
+def _build_first_digit_ratios(values: Sequence[int]) -> Dict[int, float]:
+    counts = _build_first_digit_counts(values)
+    total = max(1, sum(counts.values()))
+    return {digit: counts.get(digit, 0) / total for digit in range(1, 10)}
+
+
+def _calculate_benford_mad(values: Sequence[int]) -> float:
+    ratios = _build_first_digit_ratios(values)
+    return sum(abs(ratios[digit] - BENFORD_DIGIT_WEIGHTS[digit]) for digit in range(1, 10)) / 9.0
+
+
 def create_benford_plan(account: AbstractAccount, config, settings: BenfordSettings,
         fixed_fee: Optional[int]=None) -> BenfordPlan:
     utxos = filter_benford_utxos(account, settings)
@@ -215,32 +249,45 @@ def create_benford_plan(account: AbstractAccount, config, settings: BenfordSetti
 
     total_value = sum(utxo.value for utxo in utxos)
     dust_threshold = account.dust_threshold()
-    output_count = _target_output_count(total_value, dust_threshold, settings.privacy_level)
+    minimum_output_value = max(dust_threshold, 546, settings.min_split_value or 0)
+    maximum_output_value = settings.max_split_value or None
+    output_count = _target_output_count(total_value, dust_threshold, settings.privacy_level,
+        maximum_output_value)
+    maximum_output_count = max(output_count, 24 if maximum_output_value is not None else output_count)
     last_error: Optional[Exception] = None
 
-    while output_count >= 2:
+    while 2 <= output_count <= maximum_output_count:
         try:
             fixed_amounts = _build_fixed_amounts(total_value, output_count, dust_threshold,
-                settings.privacy_level)
+                settings.privacy_level, minimum_output_value, maximum_output_value)
             outputs = _build_output_templates(account, output_count, fixed_amounts)
             tx = account.make_unsigned_transaction(list(utxos), outputs, config, fixed_fee=fixed_fee)
             output_values = [tx_output.value for tx_output in tx.outputs]
             if any(value < dust_threshold for value in output_values):
                 raise NotEnoughFunds()
+            if maximum_output_value is not None and any(value > maximum_output_value
+                    for value in output_values):
+                raise NotEnoughFunds()
+            first_digit_counts = _build_first_digit_counts(output_values)
+            first_digit_ratios = _build_first_digit_ratios(output_values)
             return BenfordPlan(
                 tx=tx,
                 utxos=tuple(utxos),
                 output_values=tuple(output_values),
-                first_digit_counts=_build_first_digit_counts(output_values),
+                first_digit_counts=first_digit_counts,
+                first_digit_ratios=first_digit_ratios,
+                benford_mad=_calculate_benford_mad(output_values),
                 privacy_level=settings.privacy_level,
                 min_age_days=settings.min_age_days,
                 max_age_days=settings.max_age_days,
                 min_utxo_value=settings.min_utxo_value,
                 max_utxo_value=settings.max_utxo_value,
+                min_split_value=settings.min_split_value,
+                max_split_value=settings.max_split_value,
             )
         except Exception as exc:
             last_error = exc
-            output_count -= 1
+            output_count = output_count - 1 if maximum_output_value is None else output_count + 1
 
     if last_error is not None:
         raise last_error
@@ -252,13 +299,16 @@ def format_plan_preview(plan: BenfordPlan) -> str:
     for digit in range(1, 10):
         count = plan.first_digit_counts.get(digit, 0)
         if count:
-            digit_parts.append(f"{digit}:{count}")
+            ratio = plan.first_digit_ratios.get(digit, 0.0) * 100.0
+            target = BENFORD_DIGIT_WEIGHTS[digit] * 100.0
+            digit_parts.append(f"{digit}:{count} ({ratio:.1f}% vs {target:.1f}%)")
 
     lines = [
         _("Selected inputs") + f": {len(plan.utxos)}",
         _("Input total") + f": {sum(utxo.value for utxo in plan.utxos)} sats",
         _("Planned outputs") + f": {len(plan.output_values)}",
         _("Mining fee") + f": {plan.tx.get_fee()} sats",
+        _("Benford MAD") + f": {plan.benford_mad:.4f}",
         _("Leading digits") + ": " + (", ".join(digit_parts) if digit_parts else _("none")),
         "",
         _("Output amounts") + ":",

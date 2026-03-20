@@ -88,6 +88,34 @@ def test_create_benford_plan_builds_self_split_transaction() -> None:
         assert len({output.script_pubkey.to_bytes() for output in plan.tx.outputs}) == \
             len(plan.tx.outputs)
         assert len(plan.first_digit_counts) >= 2
+        assert plan.benford_mad >= 0.0
+        assert 1 in plan.first_digit_ratios
+    finally:
+        wallet.stop()
+        app_state.set_proxy(previous_state)
+
+
+def test_create_benford_plan_respects_maximum_split_value() -> None:
+    previous_state = _install_fake_app_state()
+    Net.set_to(SVMainnet)
+    wallet, account = _create_wallet_account()
+    try:
+        wallet._storage.put("stored_height", 10_000)
+        keys = account.get_fresh_keys(RECEIVING_SUBPATH, 2)
+        utxos = [
+            _make_utxo(account, keys[0].keyinstance_id, 80_000, 6),
+            _make_utxo(account, keys[1].keyinstance_id, 70_000, 7),
+        ]
+        metadata_map = {utxo.tx_hash: TxData(height=9_500) for utxo in utxos}
+        account.get_utxos = lambda **kwargs: list(utxos)
+        account.get_transaction_metadata = lambda tx_hash: metadata_map[tx_hash]
+        account.is_frozen_key = lambda key_id: False
+
+        plan = create_benford_plan(account, _DummyConfig(),
+            BenfordSettings(privacy_level=2, max_split_value=20_000))
+
+        assert max(plan.output_values) <= 20_000
+        assert len(plan.output_values) > 6
     finally:
         wallet.stop()
         app_state.set_proxy(previous_state)

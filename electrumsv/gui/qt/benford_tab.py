@@ -1,3 +1,4 @@
+import random
 import weakref
 from typing import Optional
 
@@ -68,6 +69,16 @@ class BenfordTab(QWidget):
         self._max_utxo_value.setSingleStep(1000)
         self._max_utxo_value.setSuffix(_(" sats"))
 
+        self._min_split_value = QSpinBox()
+        self._min_split_value.setRange(0, 2_100_000_000)
+        self._min_split_value.setSingleStep(500)
+        self._min_split_value.setSuffix(_(" sats"))
+
+        self._max_split_value = QSpinBox()
+        self._max_split_value.setRange(0, 2_100_000_000)
+        self._max_split_value.setSingleStep(1000)
+        self._max_split_value.setSuffix(_(" sats"))
+
         privacy_row = QHBoxLayout()
         privacy_row.addWidget(self._privacy_slider, 1)
         privacy_row.addWidget(self._privacy_value_label, 0)
@@ -79,6 +90,8 @@ class BenfordTab(QWidget):
         filters_form.addRow(_("Maximum UTXO age"), self._max_age_days)
         filters_form.addRow(_("Minimum UTXO size"), self._min_utxo_value)
         filters_form.addRow(_("Maximum UTXO size"), self._max_utxo_value)
+        filters_form.addRow(_("Minimum split amount"), self._min_split_value)
+        filters_form.addRow(_("Maximum split amount"), self._max_split_value)
         filters_box.setLayout(filters_form)
 
         self._preview_edit = QPlainTextEdit()
@@ -90,13 +103,15 @@ class BenfordTab(QWidget):
         preview_layout.addWidget(self._preview_edit)
         preview_box.setLayout(preview_layout)
 
+        self._random_button = EnterButton(_("Random"), self._on_randomize_clicked)
         self._action_button = EnterButton(_("Analyze and Split"), self._on_split_clicked)
         self._help_button = HelpDialogButton(self, "misc", "coinsplitting-tab", _("Help"))
 
         actions_row = QGridLayout()
-        actions_row.addWidget(self._action_button, 0, 0, 1, 1, Qt.AlignLeft)
-        actions_row.addWidget(self._help_button, 0, 1, 1, 1, Qt.AlignLeft)
-        actions_row.setColumnStretch(2, 1)
+        actions_row.addWidget(self._random_button, 0, 0, 1, 1, Qt.AlignLeft)
+        actions_row.addWidget(self._action_button, 0, 1, 1, 1, Qt.AlignLeft)
+        actions_row.addWidget(self._help_button, 0, 2, 1, 1, Qt.AlignLeft)
+        actions_row.setColumnStretch(3, 1)
 
         layout = QVBoxLayout()
         layout.addWidget(self._intro_label)
@@ -116,6 +131,28 @@ class BenfordTab(QWidget):
     def _on_privacy_level_changed(self, privacy_level: int) -> None:
         self._privacy_value_label.setText(str(privacy_level))
 
+    def _on_randomize_clicked(self) -> None:
+        privacy_level = self._privacy_slider.value()
+        min_age = random.randint(0, max(0, privacy_level - 1) * 7)
+        max_age = min_age + random.randint(0, privacy_level * 21)
+        min_utxo_value = random.choice((0, 1000, 2000, 5000)) * privacy_level
+        max_utxo_value = random.choice((0, 25_000, 50_000, 100_000)) * privacy_level
+        if max_utxo_value and max_utxo_value < min_utxo_value:
+            max_utxo_value = min_utxo_value + (privacy_level * 25_000)
+
+        min_split_floor = max(0, 500 * privacy_level)
+        max_split_floor = max(10_000, 20_000 * privacy_level)
+        min_split_value = random.randint(min_split_floor, max(min_split_floor, 2_500 * privacy_level))
+        max_split_value = random.randint(max(min_split_value, max_split_floor // 2), max_split_floor)
+
+        self._min_age_days.setValue(min_age)
+        self._max_age_days.setValue(max_age)
+        self._min_utxo_value.setValue(min_utxo_value)
+        self._max_utxo_value.setValue(max_utxo_value)
+        self._min_split_value.setValue(min_split_value)
+        self._max_split_value.setValue(max_split_value)
+        self._preview_edit.clear()
+
     def _get_settings(self) -> BenfordSettings:
         return BenfordSettings(
             privacy_level=self._privacy_slider.value(),
@@ -123,6 +160,8 @@ class BenfordTab(QWidget):
             max_age_days=self._max_age_days.value(),
             min_utxo_value=self._min_utxo_value.value(),
             max_utxo_value=self._max_utxo_value.value(),
+            min_split_value=self._min_split_value.value(),
+            max_split_value=self._max_split_value.value(),
         )
 
     def _update_state(self) -> None:
