@@ -310,6 +310,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
         current_tab = self._tab_widget.currentWidget()
         if current_tab is self.coinsplitting_tab:
             self.coinsplitting_tab.update_layout()
+        if current_tab is self.benford_tab:
+            self.benford_tab._update_state()
 
     def _on_ready(self) -> None:
         self._accounts_view.on_wallet_loaded()
@@ -333,6 +335,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
         self.console_tab = self.create_console_tab()
         self.contacts_tab = self.create_contacts_tab()
         self.coinsplitting_tab = self.create_coinsplitting_tab()
+        self.benford_tab = self.create_benford_tab()
 
         history_view = self.create_history_tab()
 
@@ -364,6 +367,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
             _("Con&sole"), "console", False)
         self._add_optional_tab(tabs, self.coinsplitting_tab, read_QIcon("tab_coins.png"),
             _("Coin Splitting"), "coinsplitter", False)
+        self._add_optional_tab(tabs, self.benford_tab, read_QIcon("tab_coins.png"),
+            _("Benford Split"), "benfordsplit", False)
 
     def _add_optional_tab(self, tabs, tab, icon, description: str, name: str,
             default: bool=False) -> None:
@@ -778,6 +783,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
         add_toggle_action(view_menu, self.utxo_tab)
         # add_toggle_action(view_menu, self.contacts_tab)
         add_toggle_action(view_menu, self.coinsplitting_tab)
+        add_toggle_action(view_menu, self.benford_tab)
         add_toggle_action(view_menu, self.console_tab)
         add_toggle_action(view_menu, self.notifications_tab)
 
@@ -1610,6 +1616,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin):
     def create_coinsplitting_tab(self) -> QWidget:
         from .coinsplitting_tab import CoinSplittingTab
         return CoinSplittingTab(self)
+
+    def create_benford_tab(self) -> QWidget:
+        from .benford_tab import BenfordTab
+        return BenfordTab(self)
 
     def create_notifications_tab(self) -> QWidget:
         from .notifications_view import View
