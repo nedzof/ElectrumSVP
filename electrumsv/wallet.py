@@ -645,6 +645,9 @@ class AbstractAccount:
             script, whitelist_address, max_fee, owner_address, owner_keyinstance_id,
             owner_public_key)
 
+    def import_vault_contract_script(self, script: Script) -> dict:
+        return self._wallet.import_vault_contract_script(self, script)
+
     def has_received_transaction(self, tx_hash: bytes) -> bool:
         # At this time, this means received over the P2P network.
         flags = self._wallet._transaction_cache.get_flags(tx_hash)
@@ -3251,6 +3254,20 @@ class Wallet(TriggeredCallbacks):
                 continue
             scripts.append((ScriptType.NONE, script))
         return scripts
+
+    def import_vault_contract_script(self, account: AbstractAccount, script: Script) -> dict:
+        metadata = CovenantContractRuntime.parse_contract_locking_script(script)
+        if metadata is None:
+            raise ValueError(_("Script is not a supported vault covenant"))
+
+        keyinstance = account.get_keyinstance_for_public_key_hex(metadata["owner_public_key"])
+        if keyinstance is None:
+            raise ValueError(_("Vault owner key is not available in this account"))
+
+        metadata["owner_keyinstance_id"] = keyinstance.keyinstance_id
+        self.set_vault_contract_whitelist(script, metadata["whitelist"], metadata["max_fee"],
+            metadata["owner_address"], keyinstance.keyinstance_id, metadata["owner_public_key"])
+        return cast(dict, self.get_vault_contract_metadata_for_script(script))
 
     def get_cache_size_for_tx_bytedata(self) -> int:
         """

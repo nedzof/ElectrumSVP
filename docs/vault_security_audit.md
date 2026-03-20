@@ -130,6 +130,7 @@ Implemented and passing:
 - no unsafe promotion of legacy whitelist-only entries
 - wallet reload and vault UTXO rediscovery
 - seed-restored wallet recovery from the lock transaction path
+- explicit recovery/import of vault metadata from the covenant script itself
 - malformed vault spend rejection for extra outputs
 - malformed vault spend rejection for multiple vault inputs
 - interpreter-level rejection of a mutated malformed vault spend
@@ -138,15 +139,16 @@ Implemented and passing:
 - independent artifact verifier script execution
 - Qt-backed send-view regression coverage for vault toggle and metadata registration
 - GUI misuse-path tests for vault output registration and vault send-plan restrictions
+- operator recovery utility for decoding/importing vault covenant scripts
 
 ## Residual Risks
 
 Still not fully closed for a large-funds bar:
-- Recovery depends on the lock transaction being visible in wallet history; blind rediscovery of unknown covenant outputs without that history is still not a supported scan model.
+- Fully blind rediscovery of unknown covenant outputs without either prior wallet history or the covenant script itself is still not a supported scan model.
 - The Qt send-view coverage is still targeted regression coverage, not a full end-user GUI automation suite.
 - This is still software, not a formal external security audit.
 
 ## Minimum Remaining Work Before Large-Funds Use
 
-- Decide whether blind rediscovery of covenant outputs with no prior wallet history is a product requirement; if yes, it needs an explicit index/scan design beyond the current known-script subscription model.
+- Decide whether fully blind rediscovery of covenant outputs with no prior wallet history and no covenant script is a product requirement; if yes, it needs an explicit index/scan design beyond the current known-script and script-import recovery model.
 - If you want a higher assurance bar than this internal audit, get an external review of the covenant and spend path.

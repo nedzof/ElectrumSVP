@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 import sys
 from unittest.mock import Mock
@@ -15,6 +16,8 @@ from electrumsv.tests.test_wallet import MockStorage
 from electrumsv.transaction import Transaction, TransactionContext, XTxOutput
 from electrumsv.vault_contract import CovenantContractRuntime
 from electrumsv.wallet import StandardAccount, UTXO, Wallet
+
+
 class _FakeAsync:
     def event(self):
         return asyncio.Event()
@@ -45,12 +48,13 @@ def _install_fake_app_state():
     return previous_state
 
 
-def _create_wallet_account() -> tuple[Wallet, StandardAccount]:
+def _create_wallet_account(
+        seed_text: str="cycle rocket west magnet parrot shuffle foot correct salt library feed song"
+        ) -> tuple[Wallet, StandardAccount]:
     storage = MockStorage()
     storage.close = lambda: None
     wallet = Wallet(storage)
-    keystore = from_seed(
-        "cycle rocket west magnet parrot shuffle foot correct salt library feed song", "")
+    keystore = from_seed(seed_text, "")
     account = wallet.create_account_from_keystore(keystore)
     assert isinstance(account, StandardAccount)
     account.requests.check_paid_requests = lambda *args, **kwargs: None
@@ -220,11 +224,68 @@ def test_owner_key_advertises_known_vault_script_for_subscription() -> None:
         app_state.set_proxy(previous_state)
 
 
+def test_vault_script_can_be_imported_without_existing_metadata() -> None:
+    previous_state = _install_fake_app_state()
+    wallet, account = _create_wallet_account()
+    try:
+        setup = _create_vault_setup(account)
+        wallet._storage.put("vault_contract_whitelist_map", {})
+
+        imported_metadata = account.import_vault_contract_script(setup["locking_script"])
+
+        assert imported_metadata["owner_public_key"] == setup["owner_public_key"]
+        assert imported_metadata["whitelist"] == setup["whitelist_address"]
+        assert imported_metadata["max_fee"] == setup["max_fee"]
+        assert imported_metadata["owner_keyinstance_id"] == setup["owner_key"].keyinstance_id
+        assert account.get_vault_contract_metadata_for_script(setup["locking_script"]) == \
+            imported_metadata
+    finally:
+        wallet.stop()
+        app_state.set_proxy(previous_state)
+
+
+def test_vault_script_import_rejects_unknown_owner_key() -> None:
+    previous_state = _install_fake_app_state()
+    source_wallet, source_account = _create_wallet_account()
+    target_wallet, target_account = _create_wallet_account(
+        "crystal swamp evoke seven reunion two harbor harbor response violin beach mushroom")
+    try:
+        setup = _create_vault_setup(source_account)
+        # Advance the target wallet keypool so it does not contain the source owner key.
+        target_account.get_fresh_keys(RECEIVING_SUBPATH, 20)
+        with pytest.raises(ValueError, match="owner key is not available"):
+            target_account.import_vault_contract_script(setup["locking_script"])
+    finally:
+        source_wallet.stop()
+        target_wallet.stop()
+        app_state.set_proxy(previous_state)
+
+
 def test_checked_in_artifact_verifier_script() -> None:
     subprocess.run([
         sys.executable,
         "contrib/vault_whitelist_contract/scripts/verify_artifact.py",
     ], check=True)
+
+
+def test_vault_script_recovery_utility() -> None:
+    previous_state = _install_fake_app_state()
+    wallet, account = _create_wallet_account()
+    try:
+        setup = _create_vault_setup(account)
+        result = subprocess.run([
+            sys.executable,
+            "contrib/vault_whitelist_contract/scripts/recover_vault_script.py",
+            "--script-hex",
+            setup["locking_script"].to_hex(),
+        ], check=True, capture_output=True, text=True)
+        metadata = json.loads(result.stdout)
+        assert metadata["owner_public_key"] == setup["owner_public_key"]
+        assert metadata["whitelist"] == setup["whitelist_address"]
+        assert metadata["max_fee"] == setup["max_fee"]
+    finally:
+        wallet.stop()
+        app_state.set_proxy(previous_state)
 
 
 def test_vault_utxo_survives_wallet_reload_and_can_be_spent() -> None:
