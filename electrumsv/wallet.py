@@ -114,10 +114,10 @@ def make_script_template(pubkeys: list, script_type: Optional['ScriptType'] = No
 
     if script_type is None or script_type == ScriptType.P2PKH:
         # Legacy single-sig (optional, BSV allows it)
-        return P2PKH_Address(pubkeys_objs[0].hash160(), network=Bitcoin)
+        return P2PKH_Address(pubkeys_objs[0].hash160(), network=Net.COIN)
 
     elif script_type == ScriptType.P2PK:
-        return P2PK_Output(pubkeys_objs[0], network=Bitcoin)
+        return P2PK_Output(pubkeys_objs[0], network=Net.COIN)
 
     elif script_type == ScriptType.MULTISIG_BARE:
         return P2MultiSig_Output([pk.to_bytes() for pk in sorted(pubkeys_objs, key=lambda k: k.to_hex())], m)

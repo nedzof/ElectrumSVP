@@ -28,13 +28,13 @@ import shutil
 import logging
 from typing import Optional, Tuple
 
-from bitcoinx import Bitcoin
 from bitcoinx.errors import MissingHeader
 
 from .async_ import ASync
 from .constants import PRELOADED_HEADERS
 from .constants import MAX_INCOMING_ELECTRUMX_MESSAGE_MB
 from .logs import logs
+from .networks import Net
 from .simple_config import SimpleConfig
 from .util import format_satoshis
 from .headers_storage import PersistentHeaders
@@ -131,22 +131,15 @@ class AppStateProxy:
     def read_headers(self):
         filename = self.config.file_path('headers')
 
-        if not os.path.exists(filename):
-            logger.info("No headers file found, copying preloaded headers to %s", filename)
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
-            shutil.copyfile(PRELOADED_HEADERS, filename)
-
         try:
-            self.headers = PersistentHeaders(file_path=filename, network=Bitcoin)
+            self.headers = PersistentHeaders(file_path=filename, network=Net.COIN)
         except MissingHeader as e:
             logger.warning("Existing headers file failed: %s", str(e))
             old_backup = filename + ".old"
             if os.path.exists(filename):
                 os.rename(filename, old_backup)
                 logger.info("Renamed old headers file to %s", old_backup)
-            shutil.copyfile(PRELOADED_HEADERS, filename)
-            logger.info("Copied preloaded headers to %s", filename)
-            self.headers = PersistentHeaders(file_path=filename, network=Bitcoin)
+            self.headers = PersistentHeaders(file_path=filename, network=Net.COIN)
 
     async def on_stop(self) -> None:
         if hasattr(self, '_poll_task') and self._poll_task:

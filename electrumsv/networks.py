@@ -127,18 +127,20 @@ class SVTestnet(object):
 
     COIN = BitcoinTestnet
 
+    # The historical testnet checkpoint bundled in older ElectrumSV builds is now above the
+    # current live BSV testnet height, which causes every server to reject header requests that
+    # reference it. Disable checkpoint enforcement for testnet until a current checkpoint is
+    # regenerated.
     CHECKPOINT = {
         "raw_header": bytes.fromhex(
-            '00000020f248a5cf335bb0964833cb81bae10b2f47cc640f477d44926d000000000000005e737849'
-            'ae351b1d17e0fc3e9032ffd889ad218d561143a883a3664a4e20e0729bc1b3634485021a68ca47cc'
+            '0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd'
+            '7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff001d1aa4ae18'
         ),
-        "height": 1530084,
-        "prev_work": 0x1346dab3d7c7e35b984,
+        "height": 0,
+        "prev_work": 0,
     }
 
-    VERIFICATION_BLOCK_MERKLE_ROOT = (
-        '2ee768ac67da75c6df3326bd5d680ff39faeec07174e1d500fa0b6ca35932112'
-    )
+    VERIFICATION_BLOCK_MERKLE_ROOT = None
 
     BIP44_COIN_TYPE = 1
 
@@ -274,4 +276,3 @@ class Net(metaclass=_CurrentNetMeta):
 
 
 net = SVMainnet
-

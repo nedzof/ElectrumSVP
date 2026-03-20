@@ -10,6 +10,10 @@ from .constants import PRELOADED_HEADERS
 logger = logging.getLogger(__name__)
 
 
+def _can_use_preloaded_headers(network) -> bool:
+    return network is Bitcoin
+
+
 class PersistentHeaders:
     """
     Wrapper around bitcoinx.Headers with persistent storage and
@@ -36,28 +40,50 @@ class PersistentHeaders:
     def _load_or_restore_headers(self, network):
         """Load headers from file, or restore from PRELOADED_HEADERS if missing/corrupt."""
         if not os.path.exists(self.file_path):
-            logger.info("No headers file found, copying preloaded headers to %s", self.file_path)
-            shutil.copyfile(PRELOADED_HEADERS, self.file_path)
+            if _can_use_preloaded_headers(network):
+                logger.info("No headers file found, copying preloaded headers to %s",
+                    self.file_path)
+                shutil.copyfile(PRELOADED_HEADERS, self.file_path)
+            else:
+                self._initialize_with_genesis(network)
+                return
 
         try:
             with open(self.file_path, "rb") as f:
                 raw = f.read()
+            if not raw:
+                self._initialize_with_genesis(network)
+                return
             self.cursor = self.headers.connect_many(raw)
         except MissingHeader as e:
             logger.warning("Headers file missing blocks: %s", str(e))
-            self._restore_from_preloaded(network)
+            if _can_use_preloaded_headers(network):
+                self._restore_from_preloaded(network)
+            else:
+                self._initialize_with_genesis(network)
         except Exception as e:
             logger.exception(f"Failed to load headers from {self.file_path}: {e}")
             self._backup_and_restore(network)
 
     def _restore_from_preloaded(self, network):
         """Overwrite headers file with PRELOADED_HEADERS and reload."""
+        if not _can_use_preloaded_headers(network):
+            self._initialize_with_genesis(network)
+            return
         shutil.copyfile(PRELOADED_HEADERS, self.file_path)
         with open(self.file_path, "rb") as f:
             raw = f.read()
         self.headers = Headers(network)
         self.cursor = self.headers.connect_many(raw)
         logger.info("Restored headers from preloaded file %s", PRELOADED_HEADERS)
+
+    def _initialize_with_genesis(self, network):
+        self.headers = Headers(network)
+        self.cursor = self.headers.connect(network.genesis_header)
+        os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
+        with open(self.file_path, "wb") as f:
+            f.write(network.genesis_header)
+        logger.info("Initialized headers from %s genesis", getattr(network, "name", network))
 
     def _backup_and_restore(self, network):
         """Backup corrupt headers file and restore preloaded headers."""
@@ -115,4 +141,3 @@ class PersistentHeaders:
     def __getattr__(self, name):
         """Delegate unknown attributes to the underlying Headers object."""
         return getattr(self.headers, name)
-

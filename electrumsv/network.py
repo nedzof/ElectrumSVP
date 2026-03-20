@@ -124,10 +124,17 @@ BROADCAST_TX_MSG_LIST = (
     ('bad-txns-nonfinal', _("transaction is not final"))
 )
 
-# Strip out bad servers.
-# 20230522 satoshi.vision.cash is pruned, will not provide correct state for older
-#     transactions.
-BAD_SERVER_HOSTS = { "satoshi.vision.cash" }
+# Strip out bad or stale servers.
+# - satoshi.vision.cash is pruned and will not provide correct state for older transactions.
+# - GorillaPool's ElectrumSV guidance explicitly calls out the latter two as problematic stale
+#   endpoints that users often have persisted in old configs.
+BAD_SERVER_HOSTS = {
+    "satoshi.vision.cash",
+    "electrumx.bitcoinsv.io",
+    "sv.jochen-hoenicke.de",
+}
+
+PREFERRED_MAINNET_SERVER = ("electrumx.gorillapool.io", 50002, "s")
 
 
 
@@ -158,6 +165,13 @@ def load_custom_headers(path: str):
         headers.connect(header)
     app_state.headers = headers
     return headers
+
+
+def _get_headers_tip(headers_obj):
+    tip_attr = getattr(headers_obj, "tip", None)
+    if callable(tip_attr):
+        return tip_attr()
+    return tip_attr
 
 
 def broadcast_failure_reason(exception):
@@ -484,8 +498,13 @@ class SVSession(RPCSession):
             if cp_height == 0:
                 cls._need_checkpoint_headers = False
             else:
-                # We need roughly the 146 headers before the checkpoint to validate DAA.
                 start = max(0, cp_height - 146)
+                local_tip_height = chain.tip().height
+                if local_tip_height + 1 < start:
+                    # Bootstrap forward from the local tip until we reach the DAA window.
+                    count = min(2016, start - (local_tip_height + 1))
+                    return local_tip_height + 1, count
+                # We need roughly the 146 headers before the checkpoint to validate DAA.
                 for h in range(start, cp_height):
                     try:
                         # chain.header_at_height raises MissingHeader if absent
@@ -533,7 +552,7 @@ class SVSession(RPCSession):
             try:
                 headers_obj.connect(raw_header, check_work=True)
             except Exception as e:
-                hex_str = hash_to_hex_str(Net.COIN.header_hash(raw_header))
+                hex_str = hash_to_hex_str(double_sha256(raw_header))
                 self.logger.warning(f"Cannot connect header at height {height}: {e}")
 
         # --- persist after full chunk ---
@@ -552,8 +571,8 @@ class SVSession(RPCSession):
     def _log_prev_hash_mismatch(cls, height, raw_header, prev_raw):
         logger = getattr(cls, 'logger', print)
         logger.debug(f'PrevHash mismatch at {height}: '
-                     f'{hash_to_hex_str(Net.COIN.header_hash(raw_header))} '
-                     f'prev {hash_to_hex_str(Net.COIN.header_hash(prev_raw))}')
+                     f'{hash_to_hex_str(double_sha256(raw_header))} '
+                     f'prev {hash_to_hex_str(double_sha256(prev_raw))}')
 
 
     async def _negotiate_protocol(self):
@@ -628,7 +647,8 @@ class SVSession(RPCSession):
         if not hasattr(self, 'headers'):
             self.headers = app_state.headers
 
-        local_tip_height = self.headers.tip.height
+        chain_tip = _get_headers_tip(self.headers)
+        local_tip_height = chain_tip.height if chain_tip is not None else 0
         self.logger.info(f"FORCE SUBSCRIBE HEADERS: local tip={local_tip_height}")
 
         try:
@@ -648,12 +668,13 @@ class SVSession(RPCSession):
             }
             tip_header = deserialized_header(bytes.fromhex(tip_json['hex']), tip_json['height'])
 
-            if self.headers.tip.height < tip_header.height:
+            chain_tip = _get_headers_tip(self.headers)
+            if chain_tip is None or chain_tip.height < tip_header.height:
                 await self._catch_up_to_tip(tip_header)
 
             # --- NEW: push local tip to GUI immediately ---
-            if self.headers.tip.height > 0:
-                chain_tip = self.headers.tip
+            chain_tip = _get_headers_tip(self.headers)
+            if chain_tip is not None and chain_tip.height > 0:
                 latest_header = chain_tip.header_at_height(chain_tip.height)
                 await self._on_new_tip({
                     'hex': latest_header.raw.hex(),
@@ -937,8 +958,11 @@ class SVSession(RPCSession):
         '''
         # Negotiate the protocol before doing anything else
         await self._negotiate_protocol()
-        # Checkpoint headers are essential to attempting tip connection
-        await self._get_checkpoint_headers()
+        # On mainnet the bundled headers file is far behind the current chain tip. Requiring
+        # checkpoint catch-up before even subscribing the tip makes session establishment look
+        # permanently stuck. Defer historical backfill until after the session is established.
+        if Net.NAME != "mainnet":
+            await self._get_checkpoint_headers()
         # Then subscribe headers and connect the server's tip
         await self._subscribe_headers()
         # Only once the tip is connected to our set of chains do we consider the
@@ -950,6 +974,8 @@ class SVSession(RPCSession):
             async with TaskGroup() as group:
                 if is_main_server:
                     self.logger.info('using as main server')
+                    if Net.NAME == "mainnet":
+                        await group.spawn(self._get_checkpoint_headers)
                     await group.spawn(self._main_server_batch)
                 # This raises a TaskTimeout but it gets discarded as it also seems to trigger
                 # the closed event which cancels the ping exception before that gets raised up.
@@ -1144,8 +1170,12 @@ class Network(TriggeredCallbacks):
         except Exception:
             self._tip = None
 
-        # Mark sessions to skip checkpoint download
-        SVSession._need_checkpoint_headers = False
+        checkpoint_height = Net.CHECKPOINT['height']
+        local_tip_height = self._tip.height if self._tip is not None else -1
+        # Only skip checkpoint download when local headers already cover the checkpoint window.
+        SVSession._need_checkpoint_headers = (
+            checkpoint_height > 0 and local_tip_height < checkpoint_height
+        )
 
         # --- Sessions ---
         self.sessions = []
@@ -1175,14 +1205,17 @@ class Network(TriggeredCallbacks):
         # --- Spawn main network task ---
         self.future = app_state.async_.spawn(self._main_task)
     async def request_headers_from_checkpoint(self, session: 'SVSession'):
-        """Stub: headers are preloaded, so nothing to request."""
-        # Optionally log for debugging
-        local_tip = session.headers.tip.height if session.headers.tip else 0
+        local_tip_obj = _get_headers_tip(session.headers)
+        local_tip = local_tip_obj.height if local_tip_obj is not None else 0
         cp_height = Net.CHECKPOINT['height']
-        if local_tip < cp_height:
-            self.logger.info(f"Local tip {local_tip} below checkpoint {cp_height}, "
-                             f"but headers are preloaded, skipping fetch")
-        return
+        if cp_height <= 0 or local_tip >= cp_height:
+            SVSession._need_checkpoint_headers = False
+            return
+        await session._get_checkpoint_headers()
+        updated_tip_obj = _get_headers_tip(session.headers)
+        updated_tip = updated_tip_obj.height if updated_tip_obj is not None else 0
+        if updated_tip >= cp_height:
+            SVSession._need_checkpoint_headers = False
 
 
 
@@ -1347,20 +1380,28 @@ class Network(TriggeredCallbacks):
     def _read_config(self):
         # Remove obsolete key
         app_state.config.set_key('server_blacklist', None)
+        # Config deserialization can instantiate stale SVServer objects and populate the global
+        # registry before the network starts. Always rebuild the runtime server set from the
+        # active network configuration.
+        SVServer.all_servers.clear()
 
-        # Priority server list (user-defined)
-        priority_servers = [
-            ('electrumx.gorillapool.io', {'s': '50002'}),            
-            ('electrum.api.sv', {'s': '50002'}),
-            ('neptune.api.sv', {'s': '50002'}),
-            ('alpha-esv.api.sv', {'s': '50002'}),
-            ('sv.satoshi.io', {'s': '50002'}),
-            ('sv2.satoshi.io', {'s': '50002'}),
-            ('esv.bitails.io', {'s': '50002'}),
-            ('electrum.server.sv', {'s': '50002'}),
-            ('alpha-esv.api.sv', {'s': '50002'}),
-            ('bsv.aftrek.org', {'s': '50002'}),
-        ]
+        if Net.NAME == "testnet":
+            priority_servers = list(Net.DEFAULT_SERVERS.items())
+        elif Net.NAME == "scalingtestnet":
+            priority_servers = list(Net.DEFAULT_SERVERS.items())
+        else:
+            # Priority server list for mainnet.
+            priority_servers = [
+                ('electrumx.gorillapool.io', {'s': '50002'}),
+                ('electrum.api.sv', {'s': '50002'}),
+                ('neptune.api.sv', {'s': '50002'}),
+                ('alpha-esv.api.sv', {'s': '50002'}),
+                ('sv.satoshi.io', {'s': '50002'}),
+                ('sv2.satoshi.io', {'s': '50002'}),
+                ('esv.bitails.io', {'s': '50002'}),
+                ('electrum.server.sv', {'s': '50002'}),
+                ('bsv.aftrek.org', {'s': '50002'}),
+            ]
 
         # Load priority servers into SVServer first
         for host, data in priority_servers:
@@ -1446,6 +1487,10 @@ class Network(TriggeredCallbacks):
 
     def _random_server_nowait(self, protocol):
         servers = self._available_servers(protocol)
+        if protocol == "s" and Net.NAME == "mainnet":
+            preferred = SVServer.all_servers.get(PREFERRED_MAINNET_SERVER)
+            if preferred in servers:
+                return preferred
         return random.choice(servers) if servers else None
 
     async def _random_server(self, protocol):
